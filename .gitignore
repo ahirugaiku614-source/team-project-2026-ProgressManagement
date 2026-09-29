@@ -1,14 +1,28 @@
-__pycache__/
-*.py[cod]
-.venv/
-node_modules/
-dist/
-.vscode/
-.DS_Store
-
+# ==========================================
+# Common / Environment
+# ==========================================
 .env
 .env.local
+.vscode/
+.idea/
+.DS_Store
 
-# Firebase 秘密鍵
-firebase-credentials.json
+# ==========================================
+# Backend (FastAPI / Python)
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+backend/firebase-credentials.json
 *.json
+
+# ==========================================
+# Frontend (Vue.js / Node.js)
+# ==========================================
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
