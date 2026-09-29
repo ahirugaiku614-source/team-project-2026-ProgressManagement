@@ -1,7 +1,9 @@
-<script setup>
-import HelloWorld from './components/HelloWorld.vue'
-</script>
-
 <template>
-  <HelloWorld />
+  <main>
+    <Login />
+  </main>
 </template>
+
+<script setup>
+import Login from './components/Login.vue';
+</script>

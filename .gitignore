@@ -3,6 +3,12 @@ __pycache__/
 .venv/
 node_modules/
 dist/
-.env
 .vscode/
 .DS_Store
+
+.env
+.env.local
+
+# Firebase 秘密鍵
+firebase-credentials.json
+*.json
