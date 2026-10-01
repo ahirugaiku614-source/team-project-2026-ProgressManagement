@@ -10,6 +10,8 @@ services:
       - ./backend:/app
     environment:
       - PORT=8000
+    depends_on:
+      - db
 
   # フロントエンド（Vue.js / Vite）
   frontend:
@@ -19,3 +21,20 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+
+  # データベース（PostgreSQL）
+  db:
+    image: postgres:15-alpine
+    container_name: team_progress_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: team_progress_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
