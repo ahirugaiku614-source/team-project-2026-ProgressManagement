@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker
 
 # docker-compose.yml で指定した DB 接続情報
 # postgresql://<ユーザー名>:<パスワード>@<サービス名(db)>:<ポート>/<DB名>
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:postgrespassword@db:5432/team_progress_db"
+SQLALCHEMY_DATABASE_URL = "postgresql+psycopg2://postgres:postgrespassword@db:5432/team_progress_db"
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
