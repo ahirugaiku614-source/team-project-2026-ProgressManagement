@@ -22,8 +22,8 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # リレーション
-    tasks = relationship("Task", back_populates="assignee")
-
+    tasks = relationship("Task", foreign_keys="[Task.user_id]", back_populates="owner")
+    
 # 2. チームテーブル
 class Team(Base):
     __tablename__ = "teams"
@@ -44,14 +44,18 @@ class Task(Base):
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     status = Column(Enum(TaskStatus), default=TaskStatus.TODO, nullable=False)
-    
-    # 外部キー
-    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+
+    # 作成者/所有者
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    # チーム・担当者（任意設定にする場合は nullable=True に設定）
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=True)
     assignee_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # リレーション
+    owner = relationship("User", foreign_keys=[user_id], back_populates="tasks")
+    assignee = relationship("User", foreign_keys=[assignee_id])
     team = relationship("Team", back_populates="tasks")
-    assignee = relationship("User", back_populates="tasks")

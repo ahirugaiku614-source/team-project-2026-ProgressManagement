@@ -16,3 +16,19 @@ class UserResponse(UserBase):
 
     class Config:
         from_attributes = True
+
+class TaskBase(BaseModel):
+    title: str
+    description: Optional[str] = None
+    status: str = "todo"  # todo, in_progress, done
+
+class TaskCreate(TaskBase):
+    pass
+
+class TaskResponse(TaskBase):
+    id: int
+    user_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
