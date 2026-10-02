@@ -101,3 +101,48 @@ def get_user_tasks(
 
     tasks = db.query(models.Task).filter(models.Task.user_id == user.id).all()
     return tasks
+
+# --- タスク更新 (PUT /api/tasks/{task_id}) ---
+@app.put("/api/tasks/{task_id}", response_model=schemas.TaskResponse)
+def update_task(
+    task_id: int,
+    task_in: schemas.TaskCreate,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db)
+):
+    firebase_uid = current_user.get("uid")
+    user = db.query(models.User).filter(models.User.firebase_uid == firebase_uid).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    task = db.query(models.Task).filter(models.Task.id == task_id, models.Task.user_id == user.id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task.title = task_in.title
+    task.description = task_in.description
+    task.status = task_in.status
+    
+    db.commit()
+    db.refresh(task)
+    return task
+
+# --- タスク削除 (DELETE /api/tasks/{task_id}) ---
+@app.delete("/api/tasks/{task_id}")
+def delete_task(
+    task_id: int,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db)
+):
+    firebase_uid = current_user.get("uid")
+    user = db.query(models.User).filter(models.User.firebase_uid == firebase_uid).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    task = db.query(models.Task).filter(models.Task.id == task_id, models.Task.user_id == user.id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    db.delete(task)
+    db.commit()
+    return {"message": "Task deleted successfully"}
