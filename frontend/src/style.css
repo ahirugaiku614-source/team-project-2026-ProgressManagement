@@ -294,3 +294,18 @@ code {
     border-right-color: var(--border);
   }
 }
+
+
+/* Dashboard layout overrides */
+#app {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  border: 0;
+  text-align: left;
+  min-height: 100vh;
+}
+body {
+  min-width: 320px;
+  background: #f7f8fc;
+}
