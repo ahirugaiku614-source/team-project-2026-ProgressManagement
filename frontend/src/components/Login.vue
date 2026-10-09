@@ -1,180 +1,93 @@
 <template>
   <div class="auth-container">
-    <h2>{{ isSignUp ? '新規アカウント登録' : 'ログイン' }}</h2>
-    
+    <div class="auth-brand"><span class="auth-brand-mark">T</span><span>TeamFlow</span></div>
+    <p class="auth-eyebrow">TEAM DEVELOPMENT PLATFORM</p>
+    <h2>{{ isSignUp ? 'アカウントを作成' : 'おかえりなさい' }}</h2>
+    <p class="auth-description">{{ isSignUp ? 'チームの進捗管理を始めましょう。' : 'ログインしてプロジェクトの進捗を確認しましょう。' }}</p>
     <form @submit.prevent="handleSubmit" class="auth-form">
       <div class="form-group">
-        <label>メールアドレス</label>
-        <input type="email" v-model="email" required placeholder="example@test.com" />
+        <label for="email">メールアドレス</label>
+        <input id="email" type="email" v-model="email" required autocomplete="email" placeholder="example@test.com" />
       </div>
-      
       <div class="form-group">
-        <label>パスワード</label>
-        <input type="password" v-model="password" required placeholder="6文字以上" />
+        <label for="password">パスワード</label>
+        <input id="password" type="password" v-model="password" required minlength="6" :autocomplete="isSignUp ? 'new-password' : 'current-password'" placeholder="6文字以上" />
       </div>
-      
-      <button type="submit" class="submit-btn">
-        {{ isSignUp ? '新規登録' : 'ログイン' }}
-      </button>
+      <button type="submit" class="submit-btn" :disabled="loading">{{ loading ? '処理中…' : (isSignUp ? '新規登録する' : 'ログインする') }}</button>
     </form>
-
-    <div class="toggle-mode">
-      <span @click="isSignUp = !isSignUp">
-        {{ isSignUp ? 'すでにアカウントをお持ちの方（ログインへ）' : '新規登録はこちら' }}
-      </span>
-    </div>
-
     <p v-if="errorMessage" class="error-msg">{{ errorMessage }}</p>
-    
-    <div v-if="user" class="success-box">
-      <p>🎉 ログイン成功！</p>
-      <p>ユーザー: {{ user.email }}</p>
-      <p class="token-info">※ F12 のデベロッパーツール（Console）で Firebase ID Token を確認できます</p>
+    <div class="toggle-mode">
+      <span>{{ isSignUp ? 'すでにアカウントをお持ちですか？' : 'アカウントをお持ちでないですか？' }}</span>
+      <button type="button" @click="toggleMode">{{ isSignUp ? 'ログイン' : '新規登録' }}</button>
     </div>
+    <p class="auth-footer">安全なFirebase認証でチームワークをサポートします。</p>
   </div>
 </template>
 
 <script setup>
 import { ref } from 'vue';
 import { auth } from '../firebase';
-import { 
-  createUserWithEmailAndPassword, 
-  signInWithEmailAndPassword 
-} from 'firebase/auth';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 
 const email = ref('');
 const password = ref('');
 const isSignUp = ref(false);
-const user = ref(null);
+const loading = ref(false);
 const errorMessage = ref('');
 
+const toggleMode = () => {
+  isSignUp.value = !isSignUp.value;
+  errorMessage.value = '';
+};
 const handleSubmit = async () => {
+  if (loading.value) return;
+  loading.value = true;
   errorMessage.value = '';
   try {
     if (isSignUp.value) {
-      // 1. 新規アカウント作成
-      const res = await createUserWithEmailAndPassword(auth, email.value, password.value);
-      user.value = res.user;
+      await createUserWithEmailAndPassword(auth, email.value.trim(), password.value);
     } else {
-      // 2. ログイン処理
-      const res = await signInWithEmailAndPassword(auth, email.value, password.value);
-      user.value = res.user;
+      await signInWithEmailAndPassword(auth, email.value.trim(), password.value);
     }
-
-    // バックエンド検証用の Firebase ID トークン (JWT) を取得
-    const idToken = await user.value.getIdToken();
-    console.log("=== Firebase ID Token ===");
-    console.log(idToken);
-
+    // App.vue observes Firebase auth state and automatically displays the dashboard.
   } catch (err) {
-    console.error(err);
+    console.error('Firebase authentication failed:', err);
     errorMessage.value = getJapaneseErrorMessage(err.code);
+  } finally {
+    loading.value = false;
   }
 };
-
-// エラーメッセージの日本語化
 const getJapaneseErrorMessage = (code) => {
   switch (code) {
-    case 'auth/email-already-in-use':
-      return 'このメールアドレスは既に登録されています。';
-    case 'auth/invalid-email':
-      return 'メールアドレスの形式が正しくありません。';
-    case 'auth/weak-password':
-      return 'パスワードは6文字以上で入力してください。';
+    case 'auth/email-already-in-use': return 'このメールアドレスは既に登録されています。';
+    case 'auth/invalid-email': return 'メールアドレスの形式が正しくありません。';
+    case 'auth/weak-password': return 'パスワードは6文字以上で入力してください。';
     case 'auth/user-not-found':
     case 'auth/wrong-password':
-    case 'auth/invalid-credential':
-      return 'メールアドレスまたはパスワードが間違っています。';
-    default:
-      return '認証エラーが発生しました。';
+    case 'auth/invalid-credential': return 'メールアドレスまたはパスワードが間違っています。';
+    case 'auth/too-many-requests': return 'ログイン試行が多すぎます。しばらくしてから再試行してください。';
+    case 'auth/network-request-failed': return 'ネットワーク接続を確認してください。';
+    default: return '認証エラーが発生しました。Firebaseの設定を確認してください。';
   }
 };
 </script>
 
 <style scoped>
-.auth-container {
-  max-width: 400px;
-  margin: 40px auto;
-  padding: 24px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background-color: #ffffff;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-}
-
-h2 {
-  text-align: center;
-  color: #1e293b;
-  margin-bottom: 20px;
-}
-
-.form-group {
-  margin-bottom: 16px;
-  display: flex;
-  flex-direction: column;
-}
-
-label {
-  font-size: 14px;
-  font-weight: bold;
-  color: #475569;
-  margin-bottom: 6px;
-}
-
-input {
-  padding: 8px 12px;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
-  font-size: 14px;
-}
-
-.submit-btn {
-  width: 100%;
-  padding: 10px;
-  background-color: #2563eb;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  font-weight: bold;
-  cursor: pointer;
-  margin-top: 10px;
-}
-
-.submit-btn:hover {
-  background-color: #1d4ed8;
-}
-
-.toggle-mode {
-  text-align: center;
-  margin-top: 16px;
-  font-size: 13px;
-}
-
-.toggle-mode span {
-  color: #2563eb;
-  cursor: pointer;
-  text-decoration: underline;
-}
-
-.error-msg {
-  color: #ef4444;
-  font-size: 14px;
-  margin-top: 12px;
-  text-align: center;
-}
-
-.success-box {
-  margin-top: 20px;
-  padding: 12px;
-  background-color: #f0fdf4;
-  border: 1px solid #bbf7d0;
-  border-radius: 4px;
-  color: #166534;
-}
-
-.token-info {
-  font-size: 11px;
-  color: #15803d;
-  margin-top: 4px;
-}
+.auth-container{box-sizing:border-box;width:min(100% - 32px,420px);margin:7vh auto;padding:36px;background:#fff;border:1px solid #ececf4;border-radius:18px;box-shadow:0 18px 60px #292d440c;color:#282b43;text-align:left;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.auth-brand{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:800;letter-spacing:-.5px}
+.auth-brand-mark{display:grid;place-items:center;width:34px;height:34px;background:#6558e8;color:#fff;border-radius:10px}
+.auth-eyebrow{font-size:10px;font-weight:800;letter-spacing:1.2px;color:#7b70e8;margin:28px 0 8px}
+h2{font-size:25px;font-weight:800;letter-spacing:-.7px;color:#292c43;margin:0 0 8px;text-align:left}
+.auth-description{font-size:12px;color:#9295a8;margin:0 0 24px}
+.form-group{margin-bottom:17px;display:flex;flex-direction:column}
+label{font-size:12px;font-weight:700;color:#555970;margin-bottom:7px}
+input{box-sizing:border-box;width:100%;padding:12px 13px;border:1px solid #e0e2ed;border-radius:8px;font-size:13px;color:#33374f;background:#fff;outline:none}
+input:focus{border-color:#867aef;box-shadow:0 0 0 3px #867aef1c}
+.submit-btn{width:100%;padding:12px;background:#6558e8;color:white;border:0;border-radius:8px;font-size:13px;font-weight:750;cursor:pointer;margin-top:6px}
+.submit-btn:hover{background:#5447d6}.submit-btn:disabled{opacity:.65;cursor:wait}
+.toggle-mode{display:flex;justify-content:center;align-items:center;gap:5px;margin-top:20px;font-size:11px;color:#9295a8;flex-wrap:wrap}
+.toggle-mode button{border:0;background:transparent;color:#6558e8;font-size:11px;font-weight:750;cursor:pointer}
+.error-msg{color:#dc4545;font-size:12px;margin-top:14px;padding:10px;background:#fff1f1;border-radius:7px}
+.auth-footer{font-size:10px;color:#b0b2c0;text-align:center;border-top:1px solid #f0f0f5;padding-top:18px;margin-top:26px}
+@media(max-width:480px){.auth-container{padding:25px}}
 </style>
