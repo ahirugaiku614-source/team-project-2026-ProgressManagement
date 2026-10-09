@@ -91,7 +91,7 @@
                 <p v-if="task.description" class="task-description">{{ task.description }}</p>
                 <div class="task-card-footer">
                   <div class="assignee-avatar">{{ userInitial }}</div><span class="task-owner">自分のタスク</span>
-                  <button class="edit-link" @click="editTask(task)">編集</button>
+                  <button class="edit-link" @click="editTask(task)">編集</button><button class="delete-link" @click="deleteTask(task)">削除</button>
                 </div>
               </article>
             </div>
@@ -211,6 +211,16 @@ async function saveTask() {
     saving.value = false;
   }
 }
+async function deleteTask(task) {
+  if (!window.confirm(`「${task.title}」を削除しますか？`)) return;
+  try {
+    await request(`/api/tasks/${task.id}`, { method: 'DELETE' });
+    await loadTasks();
+  } catch (error) {
+    apiError.value = true;
+    apiMessage.value = `削除できませんでした。(${error.message})`;
+  }
+}
 async function focusTasks() {
   document.getElementById('task-board')?.scrollIntoView({ behavior: 'smooth' });
 }
@@ -296,7 +306,7 @@ h1 span{font-size:22px}
 .task-card-footer{display:flex;align-items:center;gap:7px;border-top:1px solid #f0f0f6;padding-top:10px;margin-top:12px}
 .assignee-avatar{display:grid;place-items:center;width:23px;height:23px;background:#eeecff;border-radius:50%;color:#6659df;font-size:10px;font-weight:800}
 .task-owner{font-size:9px;color:#a0a2b1}
-.edit-link{margin-left:auto;border:0;background:transparent;color:#6558e8;font-size:10px;font-weight:700;cursor:pointer;padding:3px}
+.edit-link,.delete-link{border:0;background:transparent;font-size:10px;font-weight:700;cursor:pointer;padding:3px}.edit-link{margin-left:auto;color:#6558e8}.delete-link{color:#d45c69}
 .empty-column{min-height:160px;display:flex;align-items:center;justify-content:center;flex-direction:column;color:#a0a3b4;text-align:center}
 .empty-symbol{font-size:23px;color:#c0c2d0}
 .empty-column p{font-size:10px;margin:5px 0 8px}
