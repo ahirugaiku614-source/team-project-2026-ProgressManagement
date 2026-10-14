@@ -36,11 +36,14 @@
 
 <script setup>
 import { ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { auth } from '../firebase';
-import { 
-  createUserWithEmailAndPassword, 
-  signInWithEmailAndPassword 
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword
 } from 'firebase/auth';
+
+const router = useRouter();
 
 const email = ref('');
 const password = ref('');
@@ -59,6 +62,7 @@ const handleSubmit = async () => {
       // 2. ログイン処理
       const res = await signInWithEmailAndPassword(auth, email.value, password.value);
       user.value = res.user;
+      router.push('/')
     }
 
     // バックエンド検証用の Firebase ID トークン (JWT) を取得
