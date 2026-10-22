@@ -3,6 +3,10 @@ import { onAuthStateChanged } from 'firebase/auth'
 import { auth } from './firebase'
 import Home from './components/Home.vue'
 import Login from './components/Login.vue'
+import schedule from './components/schedule.vue' 
+import Editor from './components/Editor.vue'
+import CodeSharing from './components/CodeSharing.vue'
+
 
 const routes = [
   {
@@ -15,7 +19,23 @@ const routes = [
     path: '/login',
     name: 'Login',
     component: Login
+  },
+  {
+    path:'/schedule',
+    name:'schedule',
+    component: schedule,
+  },
+  {
+    path:'/Editor',
+    name:'Editor',
+    component:Editor,
+  },
+  {
+    path:'/CodeSharing',
+    name:'CodeSharing',
+    component:CodeSharing,
   }
+
 ]
 
 const router = createRouter({

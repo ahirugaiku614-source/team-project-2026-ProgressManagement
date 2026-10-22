@@ -2,6 +2,9 @@
   <div class="home-container">
     <h1>ホーム画面</h1>
     <button @click="handleLogout">ログアウト</button>
+    <button @click="gotoSchedule">スケジュール画面</button>
+    <button @click="gotoEditor">エディター画面</button>
+    <button @click="gotoCodoSharing">コード共有画面</button>
   </div>
 </template>
 
@@ -19,6 +22,15 @@ const handleLogout = async () => {
   } catch (error) {
     console.error('ログアウトエラー:', error)
   }
+}
+const gotoSchedule=()=>{
+  router.push('/schedule')
+}
+const gotoEditor=()=>{
+  router.push('/Editor')
+}
+const gotoCodoSharing=()=>{
+  router.push('/CodeSharing')
 }
 </script>
 
