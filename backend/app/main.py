@@ -6,6 +6,7 @@ from app.db.database import engine, get_db, Base
 import app.models as models
 import app.schemas as schemas
 from typing import List
+import secrets
 
 # データベーステーブルの自動生成
 models.Base.metadata.create_all(bind=engine)
@@ -146,3 +147,220 @@ def delete_task(
     db.delete(task)
     db.commit()
     return {"message": "Task deleted successfully"}
+
+
+@app.post("/api/teams", response_model=schemas.TeamResponse)
+def create_team(
+    team_in: schemas.TeamCreate,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    # Firebase UIDからログインユーザーを取得
+    firebase_uid = current_user.get("uid")
+
+    user = (
+        db.query(models.User)
+        .filter(models.User.firebase_uid == firebase_uid)
+        .first()
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found. Please access /api/me first."
+        )
+
+    # チームを作成
+    new_team = models.Team(
+        name=team_in.name,
+        description=team_in.description,
+        invite_code=secrets.token_urlsafe(16),
+    )
+
+    try:
+        db.add(new_team)
+        db.flush()  # INSERTを実行してチームIDを取得
+
+        # 作成者をオーナーとして登録
+        new_member = models.TeamMember(
+            team_id=new_team.id,
+            user_id=user.id,
+            role="owner",
+        )
+
+        db.add(new_member)
+        db.commit()
+        db.refresh(new_team)
+
+        return new_team
+
+    except Exception:
+        db.rollback()
+        raise
+
+#  所属チーム一覧取得 (GET /api/teams) 
+@app.get("/api/teams", response_model=List[schemas.TeamResponse])
+def get_user_teams(
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    # Firebase UIDからログインユーザーを取得
+    firebase_uid = current_user.get("uid")
+
+    user = (
+        db.query(models.User)
+        .filter(models.User.firebase_uid == firebase_uid)
+        .first()
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found. Please access /api/me first."
+        )
+
+    # TeamMemberを通して所属チームを取得
+    teams = (
+        db.query(models.Team)
+        .join(
+            models.TeamMember,
+            models.Team.id == models.TeamMember.team_id,
+        )
+        .filter(models.TeamMember.user_id == user.id)
+        .all()
+    )
+
+    return teams
+
+
+
+# --- 招待コードによるチーム参加 (POST /api/teams/join) ---
+@app.post("/api/teams/join", response_model=schemas.TeamResponse)
+def join_team(
+    join_in: schemas.TeamJoinRequest,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    # Firebase UIDからログインユーザーを取得
+    firebase_uid = current_user.get("uid")
+
+    user = (
+        db.query(models.User)
+        .filter(models.User.firebase_uid == firebase_uid)
+        .first()
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found. Please access /api/me first."
+        )
+
+    # 招待コードからチームを検索
+    team = (
+        db.query(models.Team)
+        .filter(models.Team.invite_code == join_in.invite_code)
+        .first()
+    )
+
+    if not team:
+        raise HTTPException(
+            status_code=404,
+            detail="Invalid invitation code."
+        )
+
+    # すでに所属しているか確認
+    existing_member = (
+        db.query(models.TeamMember)
+        .filter(
+            models.TeamMember.team_id == team.id,
+            models.TeamMember.user_id == user.id,
+        )
+        .first()
+    )
+
+    if existing_member:
+        raise HTTPException(
+            status_code=409,
+            detail="You are already a member of this team."
+        )
+
+    # チームメンバーとして登録
+    new_member = models.TeamMember(
+        team_id=team.id,
+        user_id=user.id,
+        role="member",
+    )
+
+    try:
+        db.add(new_member)
+        db.commit()
+        db.refresh(team)
+
+        return team
+
+    except Exception:
+        db.rollback()
+        raise
+
+
+
+# --- チームメンバー一覧取得 (GET /api/teams/{team_id}/members) ---
+@app.get(
+    "/api/teams/{team_id}/members",
+    response_model=List[schemas.TeamMemberResponse]
+)
+def get_team_members(
+    team_id: int,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    # Firebase UIDからログインユーザーを取得
+    firebase_uid = current_user.get("uid")
+
+    user = (
+        db.query(models.User)
+        .filter(models.User.firebase_uid == firebase_uid)
+        .first()
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found."
+        )
+
+    # ログインユーザーがチームに所属しているか確認
+    membership = (
+        db.query(models.TeamMember)
+        .filter(
+            models.TeamMember.team_id == team_id,
+            models.TeamMember.user_id == user.id,
+        )
+        .first()
+    )
+
+    if not membership:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not a member of this team."
+        )
+
+    # チームに所属するメンバー一覧を取得
+    members = (
+        db.query(
+            models.TeamMember.user_id,
+            models.User.name,
+            models.User.email,
+            models.TeamMember.role,
+            models.TeamMember.joined_at,
+        )
+        .join(
+            models.User,
+            models.TeamMember.user_id == models.User.id,
+        )
+        .filter(models.TeamMember.team_id == team_id)
+        .all()
+    )
+
+    return members
