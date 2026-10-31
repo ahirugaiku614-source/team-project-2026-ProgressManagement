@@ -65,3 +65,22 @@ class TeamMemberResponse(BaseModel):
     class Config:
         from_attributes = True
 
+# チームタスク作成時の入力データ
+class TeamTaskCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    status: str = "TODO"
+    assignee_id: Optional[int] = None
+
+
+# チームタスクの返却データ
+class TeamTaskResponse(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+    status: str
+    user_id: int
+    team_id: int
+    assignee_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime

@@ -364,3 +364,269 @@ def get_team_members(
     )
 
     return members
+
+
+#チーム共有タスク作成 (POST /api/teams/{team_id}/tasks)
+@app.post(
+    "/api/teams/{team_id}/tasks",
+    response_model=schemas.TeamTaskResponse
+)
+def create_team_task(
+    team_id: int,
+    task_in: schemas.TeamTaskCreate,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    # ログインユーザーを取得
+    firebase_uid = current_user.get("uid")
+
+    user = db.query(models.User).filter(
+        models.User.firebase_uid == firebase_uid
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # チームの存在確認
+    team = db.query(models.Team).filter(
+        models.Team.id == team_id
+    ).first()
+
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    # ログインユーザーのチーム所属確認
+    membership = db.query(models.TeamMember).filter(
+        models.TeamMember.team_id == team_id,
+        models.TeamMember.user_id == user.id
+    ).first()
+
+    if not membership:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not a member of this team."
+        )
+
+    # 担当者が指定されている場合、チームメンバーか確認
+    if task_in.assignee_id is not None:
+        assignee_membership = db.query(models.TeamMember).filter(
+            models.TeamMember.team_id == team_id,
+            models.TeamMember.user_id == task_in.assignee_id
+        ).first()
+
+        if not assignee_membership:
+            raise HTTPException(
+                status_code=400,
+                detail="Assignee must be a member of this team."
+            )
+
+    # ステータスの確認
+    try:
+        task_status = models.TaskStatus(task_in.status.upper())
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid task status."
+        )
+
+    # タスクを作成
+    new_task = models.Task(
+        title=task_in.title,
+        description=task_in.description,
+        status=task_status,
+        user_id=user.id,
+        team_id=team_id,
+        assignee_id=task_in.assignee_id
+    )
+
+    db.add(new_task)
+    db.commit()
+    db.refresh(new_task)
+
+    return new_task
+
+#チーム共有タスク一覧取得 (GET /api/teams/{team_id}/tasks)
+@app.get(
+    "/api/teams/{team_id}/tasks",
+    response_model=List[schemas.TeamTaskResponse]
+)
+def get_team_tasks(
+    team_id: int,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    # ログインユーザーを取得
+    firebase_uid = current_user.get("uid")
+
+    user = db.query(models.User).filter(
+        models.User.firebase_uid == firebase_uid
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # チームの存在確認
+    team = db.query(models.Team).filter(
+        models.Team.id == team_id
+    ).first()
+
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    # チームへの所属確認
+    membership = db.query(models.TeamMember).filter(
+        models.TeamMember.team_id == team_id,
+        models.TeamMember.user_id == user.id
+    ).first()
+
+    if not membership:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not a member of this team."
+        )
+
+    # チームに所属するタスクを取得
+    tasks = db.query(models.Task).filter(
+        models.Task.team_id == team_id
+    ).order_by(models.Task.created_at.desc()).all()
+
+    return tasks
+
+
+
+# チーム共有タスク更新 
+@app.put(
+    "/api/teams/{team_id}/tasks/{task_id}",
+    response_model=schemas.TeamTaskResponse
+)
+def update_team_task(
+    team_id: int,
+    task_id: int,
+    task_in: schemas.TeamTaskCreate,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    # ログインユーザーを取得
+    firebase_uid = current_user.get("uid")
+    user = db.query(models.User).filter(
+        models.User.firebase_uid == firebase_uid
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # チームへの所属確認
+    membership = db.query(models.TeamMember).filter(
+        models.TeamMember.team_id == team_id,
+        models.TeamMember.user_id == user.id
+    ).first()
+
+    if not membership:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not a member of this team."
+        )
+
+    # 更新対象のタスクを取得
+    task = db.query(models.Task).filter(
+        models.Task.id == task_id,
+        models.Task.team_id == team_id
+    ).first()
+
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found."
+        )
+
+    # 担当者が指定されている場合、チームメンバーか確認
+    if task_in.assignee_id is not None:
+        assignee_membership = db.query(models.TeamMember).filter(
+            models.TeamMember.team_id == team_id,
+            models.TeamMember.user_id == task_in.assignee_id
+        ).first()
+
+        if not assignee_membership:
+            raise HTTPException(
+                status_code=400,
+                detail="Assignee must be a member of this team."
+            )
+
+    # ステータスの確認
+    try:
+        task_status = models.TaskStatus(task_in.status.upper())
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid task status."
+        )
+
+    # タスク情報を更新
+    task.title = task_in.title
+    task.description = task_in.description
+    task.status = task_status
+    task.assignee_id = task_in.assignee_id
+
+    db.commit()
+    db.refresh(task)
+
+    return task
+
+
+
+# --- チーム共有タスク削除 ---
+@app.delete("/api/teams/{team_id}/tasks/{task_id}")
+def delete_team_task(
+    team_id: int,
+    task_id: int,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    # ログインユーザーを取得
+    firebase_uid = current_user.get("uid")
+    user = db.query(models.User).filter(
+        models.User.firebase_uid == firebase_uid
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # チームへの所属確認
+    membership = db.query(models.TeamMember).filter(
+        models.TeamMember.team_id == team_id,
+        models.TeamMember.user_id == user.id
+    ).first()
+
+    if not membership:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not a member of this team."
+        )
+
+    # 削除対象のタスクを取得
+    task = db.query(models.Task).filter(
+        models.Task.id == task_id,
+        models.Task.team_id == team_id
+    ).first()
+
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found."
+        )
+
+    # 作成者またはチームオーナーか確認
+    is_creator = task.user_id == user.id
+    is_owner = membership.role == "owner"
+
+    if not (is_creator or is_owner):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the task creator or team owner can delete this task."
+        )
+
+    # タスクを削除
+    db.delete(task)
+    db.commit()
+
+    return {"message": "Team task deleted successfully"}
