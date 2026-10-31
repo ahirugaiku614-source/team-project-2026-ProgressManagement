@@ -1,5 +1,6 @@
 <template>
-  <div>
-    <!-- ここにコードを書く -->
+  <div style="padding: 30px; background: #eeeeee; min-height: 100vh;">
+    <h1>スケジュール画面のテスト</h1>
+    <p>Vueの画面が正常に表示されています。</p>
   </div>
 </template>
