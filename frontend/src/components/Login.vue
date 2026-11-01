@@ -4,13 +4,13 @@
     
     <form @submit.prevent="handleSubmit" class="auth-form">
       <div class="form-group">
-        <label>メールアドレス</label>
-        <input type="email" v-model="email" required placeholder="example@test.com" />
+        <label for="auth-email">メールアドレス</label>
+        <input id="auth-email" type="email" v-model="email" required autocomplete="email" placeholder="example@test.com" />
       </div>
       
       <div class="form-group">
-        <label>パスワード</label>
-        <input type="password" v-model="password" required placeholder="6文字以上" />
+        <label for="auth-password">パスワード</label>
+        <input id="auth-password" type="password" v-model="password" required :autocomplete="isSignUp ? 'new-password' : 'current-password'" placeholder="6文字以上" />
       </div>
       
       <button type="submit" class="submit-btn">
@@ -19,12 +19,12 @@
     </form>
 
     <div class="toggle-mode">
-      <span @click="isSignUp = !isSignUp">
+      <button type="button" @click="isSignUp = !isSignUp">
         {{ isSignUp ? 'すでにアカウントをお持ちの方（ログインへ）' : '新規登録はこちら' }}
-      </span>
+      </button>
     </div>
 
-    <p v-if="errorMessage" class="error-msg">{{ errorMessage }}</p>
+    <p v-if="errorMessage" class="error-msg" role="alert">{{ errorMessage }}</p>
     
     <div v-if="user" class="success-box">
       <p>🎉 ログイン成功！</p>
@@ -97,66 +97,105 @@ const getJapaneseErrorMessage = (code) => {
 
 <style scoped>
 .auth-container {
-  max-width: 400px;
+  width: min(100% - 32px, 400px);
+  box-sizing: border-box;
   margin: 40px auto;
-  padding: 24px;
+  padding: 32px;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border-radius: 12px;
   background-color: #ffffff;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 18px 45px -28px rgba(15, 23, 42, 0.42), 0 2px 8px rgba(15, 23, 42, 0.04);
 }
 
 h2 {
   text-align: center;
   color: #1e293b;
-  margin-bottom: 20px;
+  margin: 0 0 28px;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0;
 }
 
 .form-group {
-  margin-bottom: 20px;
+  margin-bottom: 22px;
   display: flex;
   flex-direction: column;
 }
 
 label {
-  font-size: 14px;
-  font-weight: bold;
+  font-size: 13px;
+  font-weight: 600;
   color: #475569;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 input {
-  padding: 8px 12px;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 46px;
+  padding: 10px 13px;
   border: 1px solid #cbd5e1;
-  border-radius: 4px;
+  border-radius: 7px;
   font-size: 14px;
+  color: #1e293b;
+  background: #fff;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+input::placeholder {
+  color: #94a3b8;
+}
+
+input:focus-visible {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
 }
 
 .submit-btn {
   width: 100%;
-  padding: 10px;
+  min-height: 46px;
+  padding: 11px 16px;
   background-color: #2563eb;
   color: white;
   border: none;
-  border-radius: 4px;
-  font-weight: bold;
+  border-radius: 7px;
+  font-size: 15px;
+  font-weight: 600;
   cursor: pointer;
-  margin-top: 10px;
+  margin-top: 2px;
+  transition: background-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
 .submit-btn:hover {
   background-color: #1d4ed8;
+  box-shadow: 0 5px 12px rgba(37, 99, 235, 0.2);
+  transform: translateY(-1px);
+}
+
+.submit-btn:focus-visible,
+.toggle-mode button:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.28);
+  outline-offset: 3px;
 }
 
 .toggle-mode {
   text-align: center;
-  margin-top: 16px;
+  margin-top: 20px;
   font-size: 13px;
 }
 
-.toggle-mode span {
+.toggle-mode button {
+  padding: 4px;
+  border: 0;
+  background: transparent;
   color: #2563eb;
   cursor: pointer;
+  font: inherit;
+}
+
+.toggle-mode button:hover {
+  color: #1d4ed8;
   text-decoration: underline;
 }
 
@@ -180,5 +219,19 @@ input {
   font-size: 11px;
   color: #15803d;
   margin-top: 4px;
+}
+
+@media (max-width: 480px) {
+  .auth-container {
+    margin: 24px auto;
+    padding: 26px 22px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  input,
+  .submit-btn {
+    transition: none;
+  }
 }
 </style>
