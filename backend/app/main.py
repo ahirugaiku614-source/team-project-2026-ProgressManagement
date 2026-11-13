@@ -774,3 +774,42 @@ def update_code_file(
     db.refresh(file)
 
     return file
+
+
+# コードファイル削除
+@app.delete("/api/files/{file_id}")
+def delete_code_file(
+    file_id: int,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    # Firebase UIDからログインユーザーを取得
+    firebase_uid = current_user.get("uid")
+
+    user = db.query(models.User).filter(
+        models.User.firebase_uid == firebase_uid
+    ).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
+
+    # 自分が所有するファイルのみ取得
+    file = db.query(models.CodeFile).filter(
+        models.CodeFile.id == file_id,
+        models.CodeFile.user_id == user.id
+    ).first()
+
+    if not file:
+        raise HTTPException(
+            status_code=404,
+            detail="File not found"
+        )
+
+    # ファイルを削除
+    db.delete(file)
+    db.commit()
+
+    return {"message": "File deleted successfully"}
