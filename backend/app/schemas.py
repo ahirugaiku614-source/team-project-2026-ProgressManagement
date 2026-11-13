@@ -84,3 +84,31 @@ class TeamTaskResponse(BaseModel):
     assignee_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+
+
+# コードファイル作成・更新用
+class CodeFileCreate(BaseModel):
+    name: str
+    language: str
+    content: str = ""
+
+
+# コードファイル更新用
+class CodeFileUpdate(BaseModel):
+    name: str
+    language: str
+    content: str
+
+
+# コードファイル取得用
+class CodeFileResponse(BaseModel):
+    id: int
+    user_id: int
+    name: str
+    language: str
+    content: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True

@@ -630,3 +630,147 @@ def delete_team_task(
     db.commit()
 
     return {"message": "Team task deleted successfully"}
+
+
+# コードファイル管理API
+# ファイル保存
+@app.post("/api/files", response_model=schemas.CodeFileResponse)
+def create_code_file(
+    file_in: schemas.CodeFileCreate,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    firebase_uid = current_user.get("uid")
+
+    user = db.query(models.User).filter(
+        models.User.firebase_uid == firebase_uid
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 同じユーザー内でファイル名が重複していないか確認
+    existing = db.query(models.CodeFile).filter(
+        models.CodeFile.user_id == user.id,
+        models.CodeFile.name == file_in.name
+    ).first()
+
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail="File name already exists"
+        )
+
+    new_file = models.CodeFile(
+        user_id=user.id,
+        name=file_in.name,
+        language=file_in.language,
+        content=file_in.content
+    )
+
+    db.add(new_file)
+    db.commit()
+    db.refresh(new_file)
+
+    return new_file
+
+
+# 自分のファイル一覧取得
+@app.get("/api/files", response_model=List[schemas.CodeFileResponse])
+def get_code_files(
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    firebase_uid = current_user.get("uid")
+
+    user = db.query(models.User).filter(
+        models.User.firebase_uid == firebase_uid
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return db.query(models.CodeFile).filter(
+        models.CodeFile.user_id == user.id
+    ).order_by(models.CodeFile.created_at.asc()).all()
+
+
+# ファイル読み込み
+@app.get(
+    "/api/files/{file_id}",
+    response_model=schemas.CodeFileResponse
+)
+def get_code_file(
+    file_id: int,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    firebase_uid = current_user.get("uid")
+
+    user = db.query(models.User).filter(
+        models.User.firebase_uid == firebase_uid
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    file = db.query(models.CodeFile).filter(
+        models.CodeFile.id == file_id,
+        models.CodeFile.user_id == user.id
+    ).first()
+
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return file
+
+
+# ファイル更新
+@app.put(
+    "/api/files/{file_id}",
+    response_model=schemas.CodeFileResponse
+)
+def update_code_file(
+    file_id: int,
+    file_in: schemas.CodeFileUpdate,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    firebase_uid = current_user.get("uid")
+
+    user = db.query(models.User).filter(
+        models.User.firebase_uid == firebase_uid
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    file = db.query(models.CodeFile).filter(
+        models.CodeFile.id == file_id,
+        models.CodeFile.user_id == user.id
+    ).first()
+
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # 名前を変更する場合、重複を確認
+    duplicate = db.query(models.CodeFile).filter(
+        models.CodeFile.user_id == user.id,
+        models.CodeFile.name == file_in.name,
+        models.CodeFile.id != file_id
+    ).first()
+
+    if duplicate:
+        raise HTTPException(
+            status_code=409,
+            detail="File name already exists"
+        )
+
+    file.name = file_in.name
+    file.language = file_in.language
+    file.content = file_in.content
+
+    db.commit()
+    db.refresh(file)
+
+    return file

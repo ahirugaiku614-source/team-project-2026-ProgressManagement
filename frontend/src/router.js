@@ -1,4 +1,5 @@
 
+
 import { createRouter, createWebHistory } from 'vue-router'
 import { onAuthStateChanged } from 'firebase/auth'
 import { auth } from './firebase'
@@ -57,19 +58,17 @@ const router = createRouter({
 // Firebaseの認証状態
 let currentUser = null
 let authInitialized = false
-
-// 初回の認証確認が完了するまで待機するPromise
 let resolveAuthReady
 
+// 初回認証確認を待機するPromise
 const authReady = new Promise((resolve) => {
   resolveAuthReady = resolve
 })
 
-// Firebaseのログイン状態を常に監視
+// ログイン・ログアウト状態を監視
 onAuthStateChanged(auth, (user) => {
   currentUser = user
 
-  // 初回の認証確認が完了したとき
   if (!authInitialized) {
     authInitialized = true
     resolveAuthReady()
@@ -78,22 +77,20 @@ onAuthStateChanged(auth, (user) => {
 
 // 画面遷移前の認証チェック
 router.beforeEach(async (to) => {
-
-  // Firebaseの初回認証確認を待つ
   await authReady
 
-  // 未ログインの場合、ログイン画面へ移動
+  // 未ログインの場合
   if (to.meta.requiresAuth && !currentUser) {
     return { name: 'Login' }
   }
 
-  // ログイン済みの場合、ログイン画面からホームへ移動
+  // ログイン済みの場合
   if (to.name === 'Login' && currentUser) {
     return { name: 'Home' }
   }
 
-  // 問題がなければ画面遷移を許可
   return true
 })
 
 export default router
+

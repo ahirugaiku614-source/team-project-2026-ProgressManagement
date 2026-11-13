@@ -150,3 +150,38 @@ class Task(Base):
         foreign_keys=[assignee_id],
     )
     team = relationship("Team", back_populates="tasks")
+
+
+# コードファイルテーブル
+class CodeFile(Base):
+    __tablename__ = "code_files"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "name",
+            name="uq_code_file_user_name",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # ファイル所有者
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+
+    # ファイル情報
+    name = Column(String, nullable=False)
+    language = Column(String, nullable=False)
+    content = Column(Text, nullable=False, default="")
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
