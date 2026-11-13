@@ -555,22 +555,36 @@ button:hover {
 }
 
 
-/* 左下の設定・ログアウトボタン */
+/* =========================
+   左下の設定・ログアウトボタン
+========================= */
+
 .bottom-buttons {
   width: 100%;
+
   display: flex;
   align-items: center;
   gap: 10px;
 
+  /* メニューの下部に配置 */
   margin-top: auto;
-  margin-bottom: 10px;
-  padding-left: 7px;
+  margin-bottom: 0;
+
+  padding: 10px 0 10px 7px;
 
   flex-shrink: 0;
+
+  /* スクロールしても下部に表示 */
+  position: sticky;
+  bottom: 0;
+
+  /* 背景と重なり順 */
+  background: #ffffff;
+  z-index: 10;
 }
 
 
-/* 設定 */
+/* 設定ボタン */
 .setting-button {
   width: 87px;
   height: 39px;
@@ -1088,7 +1102,7 @@ button:hover {
 
   .bottom-buttons {
     gap: 5px;
-    padding-left: 0;
+    padding: 10px 0 10px 0;
   }
 
   .setting-button {
