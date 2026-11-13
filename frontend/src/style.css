@@ -294,3 +294,25 @@ code {
     border-right-color: var(--border);
   }
 }
+
+/* ブラウザ全体の余白をなくす */
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* アプリ全体の幅制限を解除 */
+#app {
+  max-width: none;
+}
+
+/* 全要素のサイズ計算 */
+* {
+  box-sizing: border-box;
+}
