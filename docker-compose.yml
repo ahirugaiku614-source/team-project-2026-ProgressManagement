@@ -37,5 +37,38 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  
+  # ブラウザ版 VS Code（ローカル検証用）
+
+  code-server:
+    build:
+        context: ./code-server
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    environment:
+      PASSWORD: ${CODE_SERVER_PASSWORD:?Set CODE_SERVER_PASSWORD in .env}
+
+    volumes:
+      - code_server_workspace:/home/coder/project
+
+    command:
+      - --bind-addr
+      - 0.0.0.0:8080
+      - --auth
+      - password
+      - /home/coder/project
+
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+
+
+
 volumes:
   postgres_data:
+  code_server_workspace:
+  code_server_config:
+  code_server_data:
