@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional
 from datetime import datetime
 
@@ -39,16 +39,13 @@ class TeamCreate(BaseModel):
 
 
 class ProjectCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=100)
     description: Optional[str] = None
 
-    @field_validator("name")
+    @field_validator("name", mode="before")
     @classmethod
     def validate_name(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("Project name must not be empty.")
-        return value
+        return value.strip() if isinstance(value, str) else value
 
 
 class ProjectResponse(BaseModel):

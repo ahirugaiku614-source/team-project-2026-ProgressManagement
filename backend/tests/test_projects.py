@@ -10,16 +10,20 @@ import os
 import unittest
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import MetaData, String, create_engine, event, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app import models
-from app.db import database
+# Importing models constructs the application's engine but must never need real
+# credentials or a connection. Actual test requests use the isolated engine below.
+with patch.dict(os.environ, {"DATABASE_URL": "sqlite://"}):
+    from app import models
+    from app.db import database
 
 
 def test_engine():
@@ -221,6 +225,51 @@ class ProjectAPITests(unittest.TestCase):
                 self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(self.db.query(models.Project).count(), 0)
 
+    def test_name_limit_is_applied_after_trimming(self):
+        for name in ("a" * 100, "開" * 100):
+            with self.subTest(name=name):
+                response = self.request("POST", json={"name": " \t" + name + "　\n"})
+                self.assertEqual(response.status_code, 201, response.text)
+                self.assertEqual(response.json()["name"], name)
+                self.assertEqual(self.db.get(models.Project, response.json()["id"]).name, name)
+
+    def test_names_over_100_characters_are_rejected_without_saving(self):
+        for name in ("a" * 101, "開" * 101):
+            with self.subTest(name=name):
+                response = self.request("POST", json={"name": " " + name + " "})
+                self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(self.db.query(models.Project).count(), 0)
+
+    def test_project_name_column_and_api_schema_have_matching_limits(self):
+        self.assertEqual(models.Project.__table__.c.name.type.length, 100)
+        schema = self.client.get("/openapi.json").json()
+        name = schema["components"]["schemas"]["ProjectCreate"]["properties"]["name"]
+        self.assertEqual(name["minLength"], 1)
+        self.assertEqual(name["maxLength"], 100)
+
+    def test_deleting_project_does_not_delete_team_creator_or_files(self):
+        response = self.request("POST", json={"name": "Isolated deletion test"})
+        self.assertEqual(response.status_code, 201)
+        file_response = self.request("POST", "/api/files", json={"name": "keep.py", "language": "python"})
+        self.assertEqual(file_response.status_code, 200)
+        self.db.delete(self.db.get(models.Project, response.json()["id"]))
+        self.db.commit()
+        self.assertIsNotNone(self.db.get(models.Team, self.team.id))
+        self.assertIsNotNone(self.db.get(models.User, self.member.id))
+        self.assertIsNotNone(self.db.get(models.CodeFile, file_response.json()["id"]))
+        self.assertEqual(self.db.query(models.TeamMember).count(), 3)
+
+    def test_parent_deletion_is_blocked_while_project_exists(self):
+        response = self.request("POST", json={"name": "Keep project"})
+        self.assertEqual(response.status_code, 201)
+        for model, parent_id in ((models.Team, self.team.id), (models.User, self.member.id)):
+            with self.subTest(model=model.__name__):
+                with self.assertRaises(IntegrityError):
+                    self.db.query(model).filter(model.id == parent_id).delete(synchronize_session=False)
+                    self.db.commit()
+                self.db.rollback()
+                self.assertIsNotNone(self.db.get(models.Project, response.json()["id"]))
+
     def test_cannot_spoof_creator_or_target_team(self):
         response = self.request("POST", json={
             "name": "Project", "created_by": self.outsider.id, "team_id": self.other_team.id,
@@ -293,6 +342,71 @@ class AdditiveSchemaTests(unittest.TestCase):
             for model in (models.User, models.Team, models.TeamMember, models.Task, models.CodeFile):
                 self.assertEqual(db.query(model).count(), 1)
             self.assertEqual(db.query(models.CodeFile).one().content, "keep")
+
+
+class ProjectNameMigrationTests(unittest.TestCase):
+    def setUp(self):
+        if not os.environ.get("PROJECT_TEST_DATABASE_URL"):
+            self.skipTest("Requires isolated PostgreSQL test schema")
+        self.engine = test_engine()
+        self.addCleanup(close_test_engine, self.engine)
+        legacy = MetaData()
+        for table in models.Base.metadata.sorted_tables:
+            table.to_metadata(legacy)
+        legacy.tables["projects"].c.name.type = String()
+        legacy.create_all(self.engine)
+
+    def seed_project(self, name):
+        with sessionmaker(bind=self.engine)() as db:
+            user = models.User(firebase_uid="existing", email="existing@example.com")
+            team = models.Team(name="Existing", invite_code="existing")
+            db.add_all([user, team])
+            db.flush()
+            db.add(models.Project(name=name, team_id=team.id, created_by=user.id))
+            db.commit()
+
+    def migrate(self):
+        script = (Path(__file__).parents[1] / "migrations/001_project_name_length.sql").read_text(encoding="utf-8")
+        connection = self.engine.raw_connection()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(script)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def test_migration_preserves_data_and_enforces_database_limit(self):
+        self.seed_project("開" * 100)
+        self.migrate()
+        self.migrate()
+        column = next(c for c in inspect(self.engine).get_columns("projects") if c["name"] == "name")
+        self.assertEqual(column["type"].length, 100)
+        with sessionmaker(bind=self.engine)() as db:
+            self.assertEqual(db.query(models.Project).one().name, "開" * 100)
+            self.assertEqual(db.query(models.User).count(), 1)
+            self.assertEqual(db.query(models.Team).count(), 1)
+            project = db.query(models.Project).one()
+            project.name = "開" * 101
+            from sqlalchemy.exc import DataError
+            with self.assertRaises(DataError):
+                db.commit()
+            db.rollback()
+            self.assertEqual(db.query(models.Project).one().name, "開" * 100)
+
+    def test_migration_aborts_without_truncating_long_existing_names(self):
+        self.seed_project("開" * 101)
+        from psycopg2 import Error
+        with self.assertRaises(Error):
+            self.migrate()
+        with sessionmaker(bind=self.engine)() as db:
+            self.assertEqual(db.query(models.Project).one().name, "開" * 101)
+            self.assertEqual(db.query(models.User).count(), 1)
+            self.assertEqual(db.query(models.Team).count(), 1)
+        column = next(c for c in inspect(self.engine).get_columns("projects") if c["name"] == "name")
+        self.assertIsNone(column["type"].length)
 
 
 if __name__ == "__main__":
