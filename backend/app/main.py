@@ -366,6 +366,75 @@ def get_team_members(
     return members
 
 
+def get_project_team_member(
+    team_id: int,
+    current_user: dict = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    """プロジェクトの操作前に、ユーザー・チーム・所属を確認する。"""
+    user = db.query(models.User).filter(
+        models.User.firebase_uid == current_user.get("uid")
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    team = db.query(models.Team).filter(models.Team.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    membership = db.query(models.TeamMember).filter(
+        models.TeamMember.team_id == team_id,
+        models.TeamMember.user_id == user.id,
+    ).first()
+    if not membership:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not a member of this team.",
+        )
+    return user
+
+
+@app.post(
+    "/api/teams/{team_id}/projects",
+    response_model=schemas.ProjectResponse,
+    status_code=201,
+)
+def create_team_project(
+    team_id: int,
+    project_in: schemas.ProjectCreate,
+    user: models.User = Depends(get_project_team_member),
+    db: Session = Depends(get_db),
+):
+    new_project = models.Project(
+        name=project_in.name,
+        description=project_in.description,
+        team_id=team_id,
+        created_by=user.id,
+    )
+    try:
+        db.add(new_project)
+        db.commit()
+        db.refresh(new_project)
+    except Exception:
+        db.rollback()
+        raise
+    return new_project
+
+
+@app.get(
+    "/api/teams/{team_id}/projects",
+    response_model=List[schemas.ProjectResponse],
+)
+def get_team_projects(
+    team_id: int,
+    user: models.User = Depends(get_project_team_member),
+    db: Session = Depends(get_db),
+):
+    return db.query(models.Project).filter(
+        models.Project.team_id == team_id,
+    ).order_by(models.Project.created_at.desc(), models.Project.id.desc()).all()
+
+
 #チーム共有タスク作成 (POST /api/teams/{team_id}/tasks)
 @app.post(
     "/api/teams/{team_id}/tasks",

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional
 from datetime import datetime
 
@@ -36,6 +36,28 @@ class TaskResponse(TaskBase):
 class TeamCreate(BaseModel):
     name: str
     description: Optional[str] = None
+
+
+class ProjectCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: Optional[str] = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return value.strip() if isinstance(value, str) else value
+
+
+class ProjectResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    team_id: int
+    created_by: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 # チーム情報の返却データ
