@@ -7,9 +7,12 @@ the actual HTTP bearer dependency and team authorization remain active.
 
 import importlib
 import os
+import sys
+import tempfile
 import unittest
 import uuid
 from datetime import datetime, timedelta
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -134,6 +137,88 @@ class ProjectAPITests(unittest.TestCase):
         return self.client.request(
             method, url or self.url, headers=self.headers(uid), **kwargs
         )
+
+    @contextmanager
+    def storage_fixture(self):
+        from app.project_storage import ProjectStorage, get_project_storage
+        with tempfile.TemporaryDirectory() as directory:
+            storage = ProjectStorage(str(Path(directory) / "storage"))
+            self.main.app.dependency_overrides[get_project_storage] = lambda: storage
+            try:
+                yield storage
+            finally:
+                self.main.app.dependency_overrides.pop(get_project_storage, None)
+
+    @unittest.skipUnless(sys.platform == "linux", "Secure storage requires Linux")
+    def test_storage_apis_initialize_only_current_users_workspace(self):
+        with self.storage_fixture() as storage:
+            project = self.request("POST", json={"name": "Workspace"}).json()
+            url = f"{self.url}/{project['id']}"
+            response = self.request("GET", url + "/workspace")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["repository_state"], "missing")
+            self.assertFalse(Path(storage.root).exists())
+            for _ in range(2):
+                response = self.request("POST", url + "/workspace/init", json={"user_id": self.outsider.id})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["user_id"], self.member.id)
+                self.assertEqual(response.json()["workspace_state"], "ready")
+            owner = self.request("GET", url + "/workspace", uid="owner")
+            self.assertEqual(owner.json()["workspace_state"], "missing")
+            self.assertEqual(owner.json()["repository_state"], "ready")
+            self.assertEqual(self.request("POST", url + "/workspace/init", uid="owner").status_code, 200)
+            self.assertEqual(self.request("GET", url + "/repository").json()["repository_state"], "ready")
+            self.assertEqual(self.request("POST", url + "/repository/init").status_code, 200)
+            self.assertFalse((Path(storage.root) / f"projects/{project['id']}/workspaces/{self.outsider.id}").exists())
+
+    @unittest.skipUnless(sys.platform == "linux", "Secure storage requires Linux")
+    def test_all_storage_apis_enforce_authentication_membership_and_project_team(self):
+        with self.storage_fixture() as storage:
+            project = self.request("POST", json={"name": "Workspace"}).json()
+            foreign = models.Project(name="Other", team_id=self.other_team.id, created_by=self.outsider.id)
+            self.db.add(foreign)
+            self.db.commit()
+            for method, suffix in (("GET", "/repository"), ("POST", "/repository/init"),
+                                   ("GET", "/workspace"), ("POST", "/workspace/init")):
+                with self.subTest(method=method, suffix=suffix):
+                    url = f"{self.url}/{project['id']}{suffix}"
+                    self.assertEqual(self.request(method, url, uid="outsider").status_code, 403)
+                    self.assertEqual(self.request(method, url, uid="invalid").status_code, 401)
+                    self.assertIn(self.client.request(method, url).status_code, (401, 403))
+                    self.assertEqual(self.request(method, f"{self.url}/{foreign.id}{suffix}").status_code, 404)
+                    self.assertEqual(self.request(method, f"{self.url}/9999{suffix}").status_code, 404)
+            self.assertFalse(Path(storage.root).exists())
+
+    @unittest.skipUnless(sys.platform == "linux", "Secure storage requires Linux")
+    def test_storage_failure_preserves_project_and_can_be_retried(self):
+        from app.project_storage import StorageUnavailable
+        with self.storage_fixture() as storage:
+            project = self.request("POST", json={"name": "Keep project"}).json()
+            url = f"{self.url}/{project['id']}/workspace/init"
+            with patch.object(storage, "_git", side_effect=StorageUnavailable("Git failed")):
+                self.assertEqual(self.request("POST", url).status_code, 503)
+            self.assertIsNotNone(self.db.get(models.Project, project["id"]))
+            self.assertEqual(self.request("POST", url).status_code, 200)
+
+    @unittest.skipUnless(sys.platform == "linux", "Secure storage requires Linux")
+    def test_project_creation_db_failure_creates_no_storage(self):
+        with self.storage_fixture() as storage:
+            with patch.object(self.db, "commit", side_effect=IntegrityError("test", {}, Exception())):
+                self.assertEqual(self.request("POST", json={"name": "Fail"}).status_code, 500)
+            self.assertFalse(Path(storage.root).exists())
+            self.assertEqual(self.db.query(models.Project).count(), 0)
+
+    @unittest.skipUnless(sys.platform == "linux", "Secure storage requires Linux")
+    def test_storage_conflicts_return_409_without_overwriting_files(self):
+        with self.storage_fixture() as storage:
+            project = self.request("POST", json={"name": "Workspace"}).json()
+            existing = Path(storage.root) / f"projects/{project['id']}/shared.git"
+            existing.mkdir(parents=True)
+            (existing / "keep").write_text("keep")
+            url = f"{self.url}/{project['id']}"
+            self.assertEqual(self.request("GET", url + "/repository").json()["repository_state"], "incomplete")
+            self.assertEqual(self.request("POST", url + "/repository/init").status_code, 409)
+            self.assertEqual((existing / "keep").read_text(), "keep")
 
     def test_member_can_create_and_owner_can_list(self):
         response = self.request("POST", json={"name": "  開発プロジェクト  ", "description": "説明"})

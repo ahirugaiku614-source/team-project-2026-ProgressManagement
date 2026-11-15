@@ -7,6 +7,7 @@ import app.models as models
 import app.schemas as schemas
 from typing import List
 import secrets
+from app.project_storage import get_project_storage, ProjectStorage, StorageConflict, StorageUnavailable
 
 # データベーステーブルの自動生成
 models.Base.metadata.create_all(bind=engine)
@@ -433,6 +434,68 @@ def get_team_projects(
     return db.query(models.Project).filter(
         models.Project.team_id == team_id,
     ).order_by(models.Project.created_at.desc(), models.Project.id.desc()).all()
+
+
+def get_accessible_project(
+    team_id: int,
+    project_id: int,
+    user: models.User = Depends(get_project_team_member),
+    db: Session = Depends(get_db),
+):
+    project = db.query(models.Project).filter(
+        models.Project.id == project_id,
+        models.Project.team_id == team_id,
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def project_storage_operation(storage, project_id, user_id=None, initialize=False):
+    try:
+        if initialize:
+            return storage.initialize(project_id, user_id)
+        return storage.status(project_id, user_id)
+    except StorageConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except StorageUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=503, detail="Project storage is unavailable") from error
+
+
+@app.post("/api/teams/{team_id}/projects/{project_id}/repository/init", response_model=schemas.ProjectRepositoryState)
+def initialize_project_repository(
+    project: models.Project = Depends(get_accessible_project),
+    storage: ProjectStorage = Depends(get_project_storage),
+):
+    return project_storage_operation(storage, project.id, initialize=True)
+
+
+@app.get("/api/teams/{team_id}/projects/{project_id}/repository", response_model=schemas.ProjectRepositoryState)
+def get_project_repository(
+    project: models.Project = Depends(get_accessible_project),
+    storage: ProjectStorage = Depends(get_project_storage),
+):
+    return project_storage_operation(storage, project.id)
+
+
+@app.post("/api/teams/{team_id}/projects/{project_id}/workspace/init", response_model=schemas.ProjectWorkspaceState)
+def initialize_project_workspace(
+    project: models.Project = Depends(get_accessible_project),
+    user: models.User = Depends(get_project_team_member),
+    storage: ProjectStorage = Depends(get_project_storage),
+):
+    return project_storage_operation(storage, project.id, user.id, initialize=True)
+
+
+@app.get("/api/teams/{team_id}/projects/{project_id}/workspace", response_model=schemas.ProjectWorkspaceState)
+def get_project_workspace(
+    project: models.Project = Depends(get_accessible_project),
+    user: models.User = Depends(get_project_team_member),
+    storage: ProjectStorage = Depends(get_project_storage),
+):
+    return project_storage_operation(storage, project.id, user.id)
 
 
 #チーム共有タスク作成 (POST /api/teams/{team_id}/tasks)

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from typing import Optional
+from typing import Literal, Optional
 from datetime import datetime
 
 class UserBase(BaseModel):
@@ -58,6 +58,17 @@ class ProjectResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ProjectRepositoryState(BaseModel):
+    project_id: int
+    repository_state: Literal["missing", "ready", "incomplete"]
+    default_branch: str = "main"
+
+
+class ProjectWorkspaceState(ProjectRepositoryState):
+    user_id: int
+    workspace_state: Literal["missing", "ready", "incomplete"]
 
 
 # チーム情報の返却データ

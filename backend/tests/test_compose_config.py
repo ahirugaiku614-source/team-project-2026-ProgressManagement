@@ -29,3 +29,9 @@ class ComposeConfigTests(unittest.TestCase):
             self.assertTrue(backend[name].replace("$$", "$") == env[name], name)
         self.assertEqual(backend["POSTGRES_HOST"], "db")
         self.assertEqual(backend["POSTGRES_PORT"], "5432")
+        self.assertEqual(backend["PROJECT_STORAGE_ROOT"], "/var/lib/team-projects")
+        mounts = services["backend"]["volumes"]
+        self.assertTrue(any(m["type"] == "volume" and m["source"] == "project_storage"
+                            and m["target"] == "/var/lib/team-projects" for m in mounts))
+        for name in ("frontend", "code-server"):
+            self.assertFalse(any(m.get("source") == "project_storage" for m in services[name]["volumes"]))
