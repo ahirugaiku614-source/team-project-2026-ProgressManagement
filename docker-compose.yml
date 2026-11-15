@@ -8,8 +8,10 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - project_storage:/var/lib/team-projects
     environment:
       PORT: "8000"
+      PROJECT_STORAGE_ROOT: /var/lib/team-projects
       POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
@@ -74,6 +76,7 @@ services:
 
 volumes:
   postgres_data:
+  project_storage:
   code_server_workspace:
   code_server_config:
   code_server_data:
