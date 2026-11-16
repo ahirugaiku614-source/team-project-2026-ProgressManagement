@@ -33,6 +33,18 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
+
+def create_startup_tables(bind):
+    """従来の初期テーブルだけを作り、明示的な移行が必要な追加テーブルは作らない。
+
+    uvicorn --reloadでモデルが再読込されても、レビュー判定の移行を実DBへ
+    暗黙に適用しないための境界。判定テーブルは003 SQLで運用者が作成する。
+    テストは専用エンジンでmetadata.create_allを明示して全テーブルを用意できる。
+    """
+    startup_tables = [table for table in Base.metadata.sorted_tables
+                      if not table.info.get("requires_explicit_migration", False)]
+    Base.metadata.create_all(bind=bind, tables=startup_tables)
+
 # 各 API リクエストで DB セッションを扱い、処理後に自動で閉じる依存関数
 def get_db():
     db = SessionLocal()

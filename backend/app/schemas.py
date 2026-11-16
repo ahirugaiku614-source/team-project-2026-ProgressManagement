@@ -110,6 +110,40 @@ class ChangeRequestResponse(BaseModel):
     git_ref: str
     created_at: datetime
     updated_at: datetime
+    # 既存のキー・意味は維持し、この5項目だけを追加する。
+    # 古い依頼は判定レコードがないため、PENDINGとnullが返る。
+    review_decision: Literal["PENDING", "APPROVED", "CHANGES_REQUESTED"] = "PENDING"
+    reviewer_id: Optional[int] = None
+    reviewer_name: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    review_reason: Optional[str] = None
+
+
+class ChangeRequestApprove(BaseModel):
+    """承認にユーザーIDやGit情報は不要。指定されても信用せず422で拒否する。"""
+    model_config = ConfigDict(extra="forbid")
+
+
+class ChangeRequestChanges(BaseModel):
+    """差し戻しは理由だけを受け付け、判定者・判定日時はサーバーが決める。"""
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def trim_reason(cls, value):
+        # 先に空白を除くことで、見た目が空の理由や空白だけの2000文字を受け付けない。
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason_text(cls, value):
+        # PostgreSQLで保存できないNUL、不正Unicode等をDB操作前に弾く。
+        # 改行・タブを含む複数行の理由は許可する。
+        value.encode("utf-8")
+        if any((ord(c) < 32 and c not in "\n\r\t") or ord(c) == 127 for c in value):
+            raise ValueError("Control characters are not allowed.")
+        return value
 
 
 class ChangedFileResponse(BaseModel):
