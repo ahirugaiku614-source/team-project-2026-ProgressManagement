@@ -1,5 +1,8 @@
-from fastapi import FastAPI, Depends,HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from app.firebase import verify_firebase_token
 from app.db.database import engine, get_db, Base
@@ -7,12 +10,24 @@ import app.models as models
 import app.schemas as schemas
 from typing import List
 import secrets
+from sqlalchemy.exc import SQLAlchemyError
+from app.change_requests import submit_change_request, change_request_diff
+from app.review_git import ReviewInvalid, ReviewLimit
 from app.project_storage import get_project_storage, ProjectStorage, StorageConflict, StorageUnavailable
 
 # データベーステーブルの自動生成
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_validation_error(request, error):
+    try:
+        return await request_validation_exception_handler(request, error)
+    except UnicodeError:
+        # JSONの不正なUnicodeをエラー本文に再表示して500になることを防ぐ。
+        return JSONResponse(status_code=422, content={"detail": "Input must be valid UTF-8"})
 
 # Vue.js (http://localhost:5173) からの通信を許可する CORS 設定
 app.add_middleware(
@@ -496,6 +511,74 @@ def get_project_workspace(
     storage: ProjectStorage = Depends(get_project_storage),
 ):
     return project_storage_operation(storage, project.id, user.id)
+
+
+def review_operation(operation):
+    """サーバーのパスやSQL、Gitの生出力を利用者へ漏らさない。"""
+    try:
+        return operation()
+    except ReviewInvalid as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except ReviewLimit as error:
+        raise HTTPException(status_code=413, detail=str(error)) from error
+    except UnicodeError as error:
+        raise HTTPException(status_code=422, detail="Review files or references must be valid UTF-8") from error
+    except StorageConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except StorageUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except (OSError, SQLAlchemyError) as error:
+        raise HTTPException(status_code=503, detail="Review storage failed; retry with the same request key") from error
+
+
+@app.post("/api/teams/{team_id}/projects/{project_id}/change-requests", response_model=schemas.ChangeRequestResponse, status_code=201)
+def create_change_request(
+    payload: schemas.ChangeRequestCreate,
+    response: Response,
+    project: models.Project = Depends(get_accessible_project),
+    user: models.User = Depends(get_project_team_member),
+    storage: ProjectStorage = Depends(get_project_storage),
+    db: Session = Depends(get_db),
+):
+    row, created = review_operation(lambda: submit_change_request(db, storage, project.id, user.id, payload))
+    response.status_code = 201 if created else 200
+    return row
+
+
+@app.get("/api/teams/{team_id}/projects/{project_id}/change-requests", response_model=List[schemas.ChangeRequestResponse])
+def list_change_requests(
+    project: models.Project = Depends(get_accessible_project),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    return db.query(models.ChangeRequest).filter_by(project_id=project.id).order_by(
+        models.ChangeRequest.created_at.desc(), models.ChangeRequest.id.desc(),
+    ).offset(offset).limit(limit).all()
+
+
+def get_accessible_change_request(
+    change_request_id: int,
+    project: models.Project = Depends(get_accessible_project),
+    db: Session = Depends(get_db),
+):
+    row = db.query(models.ChangeRequest).filter_by(id=change_request_id, project_id=project.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Change request not found")
+    return row
+
+
+@app.get("/api/teams/{team_id}/projects/{project_id}/change-requests/{change_request_id}", response_model=schemas.ChangeRequestResponse)
+def get_change_request(row: models.ChangeRequest = Depends(get_accessible_change_request)):
+    return row
+
+
+@app.get("/api/teams/{team_id}/projects/{project_id}/change-requests/{change_request_id}/diff", response_model=schemas.ChangeRequestDiffResponse)
+def get_change_request_diff(
+    row: models.ChangeRequest = Depends(get_accessible_change_request),
+    storage: ProjectStorage = Depends(get_project_storage),
+):
+    return review_operation(lambda: change_request_diff(storage, row))
 
 
 #チーム共有タスク作成 (POST /api/teams/{team_id}/tasks)
