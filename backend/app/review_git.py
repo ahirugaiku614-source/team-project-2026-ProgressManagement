@@ -169,22 +169,91 @@ class ReviewGit:
 
     def read_ref(self, parts):
         from contextlib import ExitStack
+        if not parts or any(not isinstance(part, str) or not part or "/" in part for part in parts):
+            raise StorageConflict("Invalid Git reference name")
+        name = b"refs/" + b"/".join(part.encode("utf-8") for part in parts)
+        if not self.valid_ref_name(name):
+            raise StorageConflict("Invalid Git reference name")
+        loose = None
         try:
             with ExitStack() as stack:
                 directory = stack.enter_context(self.storage._directory(self.shared, "refs"))
                 for part in parts[:-1]:
                     directory = stack.enter_context(self.storage._directory(directory, part))
-                return self.oid(self.read(directory, parts[-1]).decode("ascii").strip())
+                raw = self.read(directory, parts[-1]).removesuffix(b"\n")
+                if not re.fullmatch(rb"[0-9a-f]{40}", raw) or raw == b"0" * 40:
+                    raise StorageConflict("Invalid loose Git reference")
+                loose = raw.decode("ascii")
         except FileNotFoundError:
             pass
+
+        packed = self.packed_refs().get(name)
+        # mainは更新されるためGitと同じくloose優先。不変のレビュー参照は両方を照合する。
+        if name.startswith(b"refs/change-requests/") and loose and packed and loose != packed:
+            raise StorageConflict("Loose and packed review references do not match")
+        return loose if loose is not None else packed
+
+    @staticmethod
+    def valid_ref_name(name):
+        # UTF-8以外の既存参照名もbytesのまま扱い、ASCII制御文字やGitの禁止形式だけを拒否する。
+        return (name.startswith(b"refs/") and not name.endswith(b".")
+                and b".." not in name and b"@{" not in name
+                and not any(c <= 32 or c == 127 or c in b"~^:?*[\\" for c in name)
+                and all(part and not part.startswith(b".") and not part.endswith(b".lock")
+                        for part in name.split(b"/")))
+
+    def packed_refs(self):
         try:
-            packed = self.read(self.shared, "packed-refs", MAX_FILE_BYTES).decode("ascii")
-            for line in packed.splitlines():
-                if line.endswith(" refs/" + "/".join(parts)):
-                    return self.oid(line.split(" ", 1)[0])
+            raw = self.read(self.shared, "packed-refs", MAX_FILE_BYTES)
         except FileNotFoundError:
-            pass
-        return None
+            return {}
+        if raw and not raw.endswith(b"\n"):
+            raise StorageConflict("Unterminated packed Git reference")
+        result, previous, can_peel, sorted_refs, header = {}, None, False, False, False
+        for line in raw.split(b"\n")[:-1]:
+            self.check_deadline()
+            if line.startswith(b"# pack-refs with:") and previous is None and not header:
+                sorted_refs = b"sorted" in line.split(b":", 1)[1].split()
+                header = True
+                continue
+            if line.startswith(b"^"):
+                if not can_peel or not re.fullmatch(rb"\^[0-9a-f]{40}", line) or line[1:] == b"0" * 40:
+                    raise StorageConflict("Invalid peeled Git reference")
+                can_peel = False
+                continue
+            match = re.fullmatch(rb"([0-9a-f]{40}) (.+)", line)
+            if not match or match[1] == b"0" * 40 or not self.valid_ref_name(match[2]):
+                raise StorageConflict("Invalid packed Git reference")
+            oid, name = match.groups()
+            if name in result or (sorted_refs and previous is not None and name <= previous):
+                raise StorageConflict("Duplicate or unsorted packed Git references")
+            result[name] = oid.decode("ascii")
+            previous, can_peel = name, True
+        return result
+
+    @contextmanager
+    def git_lock(self, directory, name):
+        """Git標準の.lockも取得する。既存ロックは削除せず、今回作成したものだけを解放する。"""
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        except FileExistsError as error:
+            raise StorageUnavailable("Git reference is locked; retry later") from error
+        created = os.fstat(fd)
+        try:
+            yield
+        finally:
+            try:
+                try:
+                    current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError as error:
+                    raise StorageConflict("Git lock disappeared; operator inspection required") from error
+                if ((current.st_dev, current.st_ino) != (created.st_dev, created.st_ino)
+                        or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1):
+                    raise StorageConflict("Git lock ownership changed; operator inspection required")
+                os.unlink(name, dir_fd=directory)
+                os.fsync(directory)
+            finally:
+                os.close(fd)
 
     def capture(self, user_id, project_id):
         with self.storage._directory(self.project, "workspaces") as workspaces:
@@ -283,17 +352,28 @@ class ReviewGit:
         return self.run("cat-file", "blob", oid)
 
     def ensure_refs(self, manifest):
+        from contextlib import ExitStack
+        ref_key = manifest.get("ref_key")
+        if not isinstance(ref_key, str) or not re.fullmatch(r"[0-9a-f]{32}", ref_key):
+            raise StorageConflict("Invalid review reference key")
         for key in ("base_commit", "snapshot_commit"):
             self.commit_exists(manifest[key])
-        with self.storage._directory(self.shared, "refs") as refs:
+        # packedの確認後に別のGit操作が値を書き込む競合も防ぐ。待たずに失敗するためデッドロックしない。
+        with self.git_lock(self.shared, "packed-refs.lock"), self.storage._directory(self.shared, "refs") as refs:
             with self.new_directory(refs, "change-requests") as reviews:
-                with self.new_directory(reviews, manifest["ref_key"]) as review:
-                    for name, key in (("base", "base_commit"), ("head", "snapshot_commit")):
-                        actual = self.read_ref(("change-requests", manifest["ref_key"], name))
-                        if actual is not None:
-                            if actual != manifest[key]:
-                                raise StorageConflict("Existing review reference does not match")
-                            continue
+                with self.new_directory(reviews, ref_key) as review, ExitStack() as locks:
+                    pairs = (("base", "base_commit"), ("head", "snapshot_commit"))
+                    for name, _ in pairs:
+                        locks.enter_context(self.git_lock(review, name + ".lock"))
+                    # 両方の検査が通るまで書き込まない。片方が不一致なら他方の欠落も補わない。
+                    missing = []
+                    for name, key in pairs:
+                        actual = self.read_ref(("change-requests", ref_key, name))
+                        if actual is not None and actual != manifest[key]:
+                            raise StorageConflict("Existing review reference does not match")
+                        if actual is None:
+                            missing.append((name, key))
+                    for name, key in missing:
                         self.write_once(review, name, (manifest[key] + "\n").encode())
 
     def manifest(self, ref_key):

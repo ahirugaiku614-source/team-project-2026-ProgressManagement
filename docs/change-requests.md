@@ -156,6 +156,31 @@ baseとheadの参照がGitの到達可能性を維持するため、DBにIDだ�
 通常のGit GCで提出オブジェクトが消えることを防ぎます。packed-refs化された参照も読み取れます。
 既存の参照が違うIDを指す場合は、自動で上書き・削除せず409で停止します。
 
+### loose参照とpacked-refsが混在する場合
+
+Gitでは通常、loose（refs配下の個別ファイル）がpacked-refsより優先されます。
+mainは更新されるため、古いpacked値と新しいloose値が共存する正常なケースがあり、この優先順を維持します。
+一方、レビュー用のbase/headは不変なので、両方に値がある場合は一致を必須とします。
+
+- looseのみ、packedのみ、両方が同じ値：期待するコミットIDと照合して使用します。
+  packedのみで正常な場合、同じ参照をlooseとして重ねて作ることはありません。
+- 両方が異なる値、DB・記録と異なる値：409で停止し、既存参照を変更しません。
+- packed-refsの重複、不正な行・SHA-1、終端改行の欠落、sorted指定時の順序違反：
+  looseで隠さず409で停止します。不正なlooseからpackedへ黙って切り替えることもしません。
+- 別の参照の日本語名等はbytesで扱い、ASCIIへの変換失敗でレビューが読めなくなることを防ぎます。
+  注釈付きタグのpeeled行は検査して読み飛ばし、レビューコミットと取り違えません。
+
+復旧時はpacked-refs.lockと対象base.lock・head.lockを排他的に取得し、
+両方の参照を確認した後に、欠けた参照だけを原子的に作成します。
+片方が不一致ならもう片方も作成しません。途中のI/O失敗で一方だけできた場合は、従来どおり同じ提出キーで再試行します。
+ロックが既にあれば503で停止し、自動で削除しません。待たずに取得失敗とするため、他のGit操作との待ち合わせを作りません。
+正常終了・例外時とも、この処理が新しく作った一時ロックだけを所有確認後に解放します。
+
+Git標準のロックを守るpack-refs・update-ref等との競合を防ぐものであり、
+ロックを無視する管理者の直接書き換えや削除まで防ぐものではありません。
+クラッシュ後のロックが残っている場合は管理者が実行中プロセスと復旧記録を確認し、
+別途判断してください。アプリは既存ロックを自動回収しません。
+
 DBとGitを一つのトランザクションにはできません。プロジェクトロックの中で、
 スナップショット作成→復旧用JSON→base/head参照→DBコミットの順に実行します。
 Gitのfsync設定と、記録・参照・親ディレクトリのfsyncを使用します。
@@ -242,9 +267,30 @@ PostgreSQLは新規の一時コンテナ・メモリ上のデータ領域を使�
 既存のDB・Git保存領域・Dockerボリュームには接続・変更していません。
 テスト依存の既存TestClientから非推奨警告が出ますが、テストは成功しています。
 
+### マージ前の参照管理の追加検証（2026年11月16日）
+
+looseが存在するとpackedを確認せず、不変のレビュー参照の不一致を見逃す点を修正しました。
+復旧前にbase/headの両方を検査し、Git標準のpacked-refs.lock・各参照の.lockを取得します。
+既存参照・他プロセスのロック・DBの内容を、不一致の解消のために上書き／削除することはありません。
+
+- 参照管理の15件と、混在不整合時にdiff・再試行を拒否してDBを保持するAPI検証1件を追加。
+- 合計115件。Linux＋PostgreSQL 15は114件成功・1件スキップ、
+  Linux＋SQLiteは108件成功・7件スキップ、Windowsは39件成功・76件スキップ。
+  スキップはLinux／PostgreSQL専用の検証とコンテナ内にDocker CLIがないためで、ComposeはWindowsで成功。
+- 実Gitのpack-refs --all --no-pruneで両形式を共存させ、値の一致・両方向の不一致を確認。
+  packedのみの再試行でlooseを重ねないこと、mainのloose優先が実Gitと一致することを確認。
+- 重複・不正形式・改行欠落、日本語の別参照、注釈付きタグのpeeled行、既存ロックの保持を確認。
+- 参照公開中に実Gitのpack-refs・update-refを実行し、ロック競合で拒否されることを確認。
+  公開失敗時のロック解放と再試行、別プロセスに置き換えられたロックを削除しないことも確認。
+
+すべて一時Git領域と一時DBでの検証です。稼働中のGit・DB・Dockerボリュームは操作していません。
+ロックを守らない直接操作、プロセス強制終了・実電源断後の実機復旧は未検証で、既存の運用上の制約は維持します。
+
 ## 参照資料
 
 - [git hash-object](https://git-scm.com/docs/git-hash-object)
 - [git mktree](https://git-scm.com/docs/git-mktree)
 - [git commit-tree](https://git-scm.com/docs/git-commit-tree)
 - [Git設定の仕様](https://git-scm.com/docs/git-config)
+- [Git pack-refs](https://git-scm.com/docs/git-pack-refs)
+- [Git packed-refsの実装](https://github.com/git/git/blob/master/refs/packed-backend.c)

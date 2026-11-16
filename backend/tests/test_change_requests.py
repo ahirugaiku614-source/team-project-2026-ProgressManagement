@@ -331,6 +331,20 @@ class ChangeRequestAPITests(unittest.TestCase):
         self.assertEqual(self.submit(row["request_key"]).status_code, 409)
         self.assertFalse((self.shared / row["git_ref"]).exists())
 
+    def test_mixed_reference_conflict_rejects_diff_and_retry_without_database_changes(self):
+        self.write()
+        row = self.submit().json()
+        subprocess.run(["git", "--git-dir", str(self.shared), "pack-refs", "--all", "--no-prune"],
+                       check=True, capture_output=True, timeout=30, shell=False)
+        packed = self.shared / "packed-refs"
+        packed.write_bytes(packed.read_bytes().replace(row["snapshot_commit"].encode(), row["base_commit"].encode()))
+        before = packed.read_bytes(), (self.shared / row["git_ref"]).read_bytes()
+        self.assertEqual(self.request("GET", f"{self.review_url}/{row['id']}/diff").status_code, 409)
+        self.assertEqual(self.submit(row["request_key"]).status_code, 409)
+        self.assertEqual(self.request("GET", f"{self.review_url}/{row['id']}").json(), row)
+        self.assertEqual(self.db.query(models.ChangeRequest).count(), 1)
+        self.assertEqual((packed.read_bytes(), (self.shared / row["git_ref"]).read_bytes()), before)
+
     def test_shared_config_is_not_used_and_alternates_are_rejected(self):
         self.write()
         (self.shared / "config").write_text("[include]\npath=/invalid/server-file\n")
