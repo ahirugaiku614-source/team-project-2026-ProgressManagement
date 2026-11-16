@@ -15,3 +15,6 @@
 
 提出済みの変更に対する承認・差し戻しAPI、判定の同時操作対策、DB移行と検証結果は
 [第5段階の承認・差し戻しAPI](docs/change-request-reviews.md)を参照してください。
+
+承認済み変更の共有mainへの統合、初回main、途中失敗からの復旧とDB移行は
+[第6段階の共有Git統合API](docs/change-request-integration.md)を参照してください。

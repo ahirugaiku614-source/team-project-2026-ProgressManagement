@@ -409,7 +409,7 @@ class AdditiveSchemaTests(unittest.TestCase):
         engine = test_engine()
         self.addCleanup(close_test_engine, engine)
         legacy_tables = [t for t in models.Base.metadata.sorted_tables
-                         if t.name not in ("projects", "change_requests", "change_request_reviews")]
+                         if t.name not in ("projects", "change_requests", "change_request_reviews", "change_request_integrations")]
         models.Base.metadata.create_all(engine, tables=legacy_tables)
         with sessionmaker(bind=engine)() as db:
             user = models.User(firebase_uid="existing", email="existing@example.com")

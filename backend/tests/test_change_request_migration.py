@@ -17,7 +17,7 @@ class ChangeRequestMigrationTests(unittest.TestCase):
         self.engine = fixtures.test_engine()
         self.addCleanup(fixtures.close_test_engine, self.engine)
         tables = [table for table in models.Base.metadata.sorted_tables
-                  if table.name not in ("change_requests", "change_request_reviews")]
+                  if table.name not in ("change_requests", "change_request_reviews", "change_request_integrations")]
         models.Base.metadata.create_all(self.engine, tables=tables)
         self.db = sessionmaker(bind=self.engine)()
         self.addCleanup(self.db.close)

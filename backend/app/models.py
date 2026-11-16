@@ -10,6 +10,7 @@ from sqlalchemy import (
     UniqueConstraint,
     CheckConstraint,
     Index,
+    text,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -180,6 +181,46 @@ class ChangeRequestReview(Base):
 
     change_request = relationship("ChangeRequest", back_populates="review")
     reviewer = relationship("User", lazy="selectin")
+
+
+class ChangeRequestIntegration(Base):
+    """GitとDBの二段階処理を記録する。PREPAREDはGit更新済みの可能性もある。
+
+    既存の提出状態やレビュー判定とは独立させる。COMPLETEDになっても依頼を
+    CLOSEDへ変更しない。履歴を消さず、再送には同じoperation_idの結果を返す。
+    """
+    __tablename__ = "change_request_integrations"
+    __table_args__ = (
+        UniqueConstraint("operation_id", name="uq_integration_operation"),
+        CheckConstraint("status IN ('PREPARED', 'COMPLETED')", name="ck_integration_status"),
+        CheckConstraint(
+            "(status = 'PREPARED' AND integrated_at IS NULL) OR "
+            "(status = 'COMPLETED' AND integrated_at IS NOT NULL AND integrated_at >= prepared_at)",
+            name="ck_integration_time",
+        ),
+        CheckConstraint("length(operation_id) = 36", name="ck_integration_operation"),
+        CheckConstraint(
+            "length(main_after) = 40 AND (main_before IS NULL OR "
+            "(length(main_before) = 40 AND main_before <> main_after))", name="ck_integration_commits",
+        ),
+        # 未確定の処理があるProjectでは次のGit更新を始めない。
+        # SQLite側も同じ部分一意索引とし、テストと本番の制約の意味を揃える。
+        Index("uq_integration_pending_project", "project_id", unique=True,
+              postgresql_where=text("status = 'PREPARED'"),
+              sqlite_where=text("status = 'PREPARED'")),
+        {"info": {"requires_explicit_migration": True}},
+    )
+
+    change_request_id = Column(Integer, ForeignKey("change_requests.id", ondelete="RESTRICT"), primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False, index=True)
+    operation_id = Column(String(36), nullable=False)
+    integrated_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    status = Column(String(16), nullable=False)
+    prepared_at = Column(DateTime, nullable=False)
+    integrated_at = Column(DateTime, nullable=True)
+    # NULLは、仮想baseではなく「実際のmain参照がまだ存在しなかった」を表す。
+    main_before = Column(String(40), nullable=True)
+    main_after = Column(String(40), nullable=False)
 
 
 # チームメンバーテーブル
