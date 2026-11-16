@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import json
 import os
+import errno
 import subprocess
 import sys
 import unittest
@@ -473,7 +474,199 @@ class ChangeRequestIntegrationTests(unittest.TestCase):
         self.assertNotIn("../", response.text)
         self.assertEqual(self.main_oid(), self.approved["snapshot_commit"])
 
-    def child_operation(self, crash_before_completion=False):
+    def test_completed_retry_rejects_missing_rewound_or_unrelated_main(self):
+        self.assertEqual(self.integrate().status_code, 200)
+        main = self.shared / "refs/heads/main"
+        after = main.read_bytes()
+        main.rename(self.shared / "saved-main-for-review")
+        self.assertEqual(self.integrate().status_code, 409)
+        self.assertFalse(main.exists())
+        for value in (self.approved["base_commit"], self.baseline({"unrelated": ("100644", b"other") } )):
+            main.write_text(value + "\n")
+            self.assertEqual(self.integrate().status_code, 409)
+            self.assertEqual(main.read_text().strip(), value)
+        main.write_bytes(after)
+        self.assertEqual(self.integrate().status_code, 200)
+
+    def test_directory_fsync_failure_after_replace_must_be_synced_again_before_completion(self):
+        real_fsync = os.fsync
+        failed = False
+        main = self.shared / "refs/heads/main"
+
+        def fail_after_replace(fd):
+            nonlocal failed
+            path = os.readlink(f"/proc/self/fd/{fd}")
+            if path == str(main.parent) and main.exists() and not failed:
+                failed = True
+                raise OSError(errno.EIO, "simulated directory persistence failure")
+            return real_fsync(fd)
+
+        with patch("app.integration_git.os.fsync", side_effect=fail_after_replace):
+            self.assertEqual(self.integrate().status_code, 503)
+        self.assertTrue(failed)
+        self.assertEqual(self.status().json()["status"], "PREPARED")
+        self.assertEqual(main.read_text().strip(), self.approved["snapshot_commit"])
+
+        def fail_sync_of_published_main(fd):
+            if os.readlink(f"/proc/self/fd/{fd}") == str(main):
+                raise OSError(errno.EIO, "published main still cannot be persisted")
+            return real_fsync(fd)
+
+        with patch("app.integration_git.os.fsync", side_effect=fail_sync_of_published_main):
+            self.assertEqual(self.integrate().status_code, 503)
+        self.assertEqual(self.status().json()["status"], "PREPARED")
+        self.assertEqual(self.integrate().status_code, 200)
+
+    def test_prepared_initial_retry_must_revalidate_virtual_base(self):
+        self.baseline({"history": ("100644", b"not empty")})
+        self.approve_new()
+        with patch.object(IntegrationJournal, "prepare", side_effect=StorageUnavailable("stop before journal")):
+            self.assertEqual(self.integrate().status_code, 503)
+        record = self.db.query(models.ChangeRequestIntegration).one()
+        # DB/Gitの不整合を専用fixtureだけで再現。NULL beforeを無条件に初回扱いしない。
+        record.main_before = None
+        self.db.commit()
+        (self.shared / "refs/heads/main").rename(self.shared / "saved-main-for-initial-retry")
+        self.assertEqual(self.integrate().status_code, 409)
+        self.assertIsNone(self.main_oid())
+
+    def test_prepared_retry_rejects_an_already_archived_operation(self):
+        self.assertEqual(self.integrate().status_code, 200)
+        record = self.db.query(models.ChangeRequestIntegration).one()
+        record.status, record.integrated_at = "PREPARED", None
+        self.db.commit()
+        main = self.shared / "refs/heads/main"
+        main.rename(self.shared / "saved-main-before-stale-db-retry")
+        self.assertEqual(self.integrate().status_code, 409)
+        self.assertFalse(main.exists())
+        self.assertFalse((self.project_dir / "integration-journal/active.json").exists())
+
+    def test_active_journal_fsync_failure_never_allows_main_update_on_retry(self):
+        journal = self.project_dir / "integration-journal"
+        real_fsync = os.fsync
+
+        def fail_parent_after_active_publish(fd):
+            if os.readlink(f"/proc/self/fd/{fd}") == str(journal) and (journal / "active.json").exists():
+                raise OSError(errno.EIO, "intent directory cannot be persisted")
+            return real_fsync(fd)
+
+        with patch("app.integration_git.os.fsync", side_effect=fail_parent_after_active_publish):
+            self.assertEqual(self.integrate().status_code, 503)
+        self.assertIsNone(self.main_oid())
+
+        def fail_active_file(fd):
+            if os.readlink(f"/proc/self/fd/{fd}") == str(journal / "active.json"):
+                raise OSError(errno.EIO, "intent file cannot be persisted")
+            return real_fsync(fd)
+
+        with patch("app.integration_git.os.fsync", side_effect=fail_active_file):
+            self.assertEqual(self.integrate().status_code, 503)
+        self.assertIsNone(self.main_oid())
+        self.assertEqual(self.status().json()["status"], "PREPARED")
+        self.assertEqual(self.integrate().status_code, 200)
+
+    def test_archive_rename_fsync_failure_requires_archive_resync_on_retry(self):
+        journal = self.project_dir / "integration-journal"
+        real_fsync = os.fsync
+
+        def fail_archive_directory(fd):
+            if (os.readlink(f"/proc/self/fd/{fd}") == str(journal)
+                    and not (journal / "active.json").exists() and list(journal.glob("*.json"))):
+                raise OSError(errno.EIO, "archive directory cannot be persisted")
+            return real_fsync(fd)
+
+        with patch("app.integration_git.os.fsync", side_effect=fail_archive_directory):
+            self.assertEqual(self.integrate().status_code, 503)
+        completed = self.status().json()
+        self.assertEqual(completed["status"], "COMPLETED")
+        archived = journal / (completed["operation_id"] + ".json")
+        self.assertTrue(archived.exists())
+
+        def fail_archive_file(fd):
+            if os.readlink(f"/proc/self/fd/{fd}") == str(archived):
+                raise OSError(errno.EIO, "archive file cannot be persisted")
+            return real_fsync(fd)
+
+        with patch("app.integration_git.os.fsync", side_effect=fail_archive_file):
+            self.assertEqual(self.integrate().status_code, 503)
+        self.assertEqual(self.integrate().json(), completed)
+
+    def test_completed_active_is_not_archived_when_main_cannot_prove_result(self):
+        with patch.object(IntegrationJournal, "archive", side_effect=StorageUnavailable("stop before archive")):
+            self.assertEqual(self.integrate().status_code, 503)
+        active = self.project_dir / "integration-journal/active.json"
+        before = active.read_bytes()
+        (self.shared / "refs/heads/main").rename(self.shared / "main-moved-for-review")
+        self.assertEqual(self.integrate().status_code, 409)
+        self.assertEqual(active.read_bytes(), before)
+        self.assertEqual(list(active.parent.glob("*.json")), [active])
+
+    def test_completed_active_of_another_request_requires_original_request_recovery(self):
+        with patch.object(IntegrationJournal, "archive", side_effect=StorageUnavailable("stop before archive")):
+            self.assertEqual(self.integrate().status_code, 503)
+        original_url = self.detail
+        self.approve_new()
+        self.assertEqual(self.integrate().status_code, 409)
+        self.assertEqual(self.request("POST", original_url + "/integrate", uid="owner").status_code, 200)
+        self.assertEqual(self.integrate().status_code, 200)
+
+    def test_completed_replay_ancestry_is_bounded_and_hash_verified(self):
+        self.assertEqual(self.integrate().status_code, 200)
+        with ReviewGit(self.storage).session(self.project_id) as review:
+            current = self.approved["snapshot_commit"]
+            tree = review.run("rev-parse", current + "^{tree}").decode().strip()
+            for i in range(3):
+                current = review.run("commit-tree", tree, "-p", current, data=f"Later {i}\n".encode()).decode().strip()
+        self.git("update-ref", "refs/heads/main", current)
+        with patch("app.integration_git.MAX_REPLAY_ANCESTRY", 2):
+            self.assertEqual(self.integrate().status_code, 409)
+        self.assertEqual(self.integrate().status_code, 200)
+        path = self.shared / "objects" / current[:2] / current[2:]
+        path.chmod(0o600)
+        path.write_bytes(zlib.compress(b"commit 8\0tampered"))
+        self.assertIn(self.integrate().status_code, (409, 503))
+
+    def test_initial_virtual_base_rejects_noncanonical_commit_headers_or_message(self):
+        from app.integration_git import verify_initial_base
+        with ReviewGit(self.storage).session(self.project_id) as review:
+            raw = review.run("cat-file", "commit", self.approved["base_commit"])
+            verify_initial_base(review, self.approved["base_commit"])
+            for content in (raw.replace(b"author Project Review", b"author Different Author"),
+                            raw.replace(b"Empty review base", b"Other empty root"),
+                            raw.replace(b"\nauthor ", b"\nparent " + self.approved["base_commit"].encode() + b"\nauthor ")):
+                oid = review.run("hash-object", "-t", "commit", "-w", "--stdin", data=content).decode().strip()
+                with self.assertRaises(StorageConflict):
+                    verify_initial_base(review, oid)
+
+    def test_packed_only_main_can_be_resynced_during_prepared_recovery(self):
+        with self.fail_completion():
+            self.assertEqual(self.integrate().status_code, 503)
+        self.git("pack-refs", "--all")
+        self.assertFalse((self.shared / "refs/heads/main").exists())
+        before = (self.shared / "packed-refs").read_bytes()
+        with patch("app.integration_git.os.replace", side_effect=AssertionError("No main rewrite during recovery")):
+            response = self.integrate()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual((self.shared / "packed-refs").read_bytes(), before)
+        self.assertFalse((self.shared / "refs/heads/main").exists())
+
+    def test_last_window_lock_ignoring_writer_is_outside_guarantee(self):
+        # このテストは保証の限界を記録する。直前の値検査後にロックを無視して
+        # 書かれた値はrenameで置換され得る。通常Gitライターの排他とは区別する。
+        # 改ざんするのは本テスト専用mainだけで、稼働中Gitには接続しない。
+        real_replace = os.replace
+        main = self.shared / "refs/heads/main"
+
+        def ignore_lock_then_replace(*args, **kwargs):
+            subprocess.run([sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text(sys.argv[2] + '\\n')",
+                            str(main), self.approved["base_commit"]], check=True, timeout=5, shell=False)
+            return real_replace(*args, **kwargs)
+
+        with patch("app.integration_git.os.replace", side_effect=ignore_lock_then_replace):
+            self.assertEqual(self.integrate().status_code, 200)
+        self.assertEqual(main.read_text().strip(), self.approved["snapshot_commit"])
+
+    def child_operation(self, crash_before_completion=False, crash_point=None):
         """OS終了でfinallyが走らない状況を、専用PGと一時Gitだけで再現する。"""
         import time
         # fork前に親の参照値を取り出す。子は親のDB接続を再利用しない。
@@ -483,7 +676,7 @@ class ChangeRequestIntegrationTests(unittest.TestCase):
             try:
                 self.engine.dispose(close=False)
                 with sessionmaker(bind=self.engine)() as db:
-                    if crash_before_completion:
+                    if crash_before_completion or crash_point in ("prepared", "completed"):
                         original = db.commit
                         count = 0
 
@@ -491,11 +684,26 @@ class ChangeRequestIntegrationTests(unittest.TestCase):
                             nonlocal count
                             count += 1
                             if count == 2:
-                                os._exit(73)  # main公開済み・DB確定前。ロックは意図的に残る。
+                                if crash_before_completion:
+                                    os._exit(73)  # main公開済み・DB確定前。ロックは意図的に残る。
                             original()
+                            if count == 1 and crash_point == "prepared":
+                                os._exit(75)
+                            if count == 2 and crash_point == "completed":
+                                os._exit(76)
 
                         db.commit = commit
-                    integrate_change_request(db, self.storage, *args)
+                    if crash_point == "archive":
+                        real_archive = IntegrationJournal.archive
+
+                        def archive_then_exit(journal, record):
+                            real_archive(journal, record)
+                            os._exit(77)
+
+                        with patch.object(IntegrationJournal, "archive", archive_then_exit):
+                            integrate_change_request(db, self.storage, *args)
+                    else:
+                        integrate_change_request(db, self.storage, *args)
                 os._exit(74)  # DB確定・ロック解放後、HTTP応答前に停止した状況。
             except BaseException:
                 os._exit(99)
@@ -526,3 +734,35 @@ class ChangeRequestIntegrationTests(unittest.TestCase):
         self.assertTrue(before)
         self.assertEqual(self.integrate().status_code, 503)
         self.assertEqual(before, {str(p): p.read_bytes() for p in self.shared.rglob("*.lock")})
+
+    @unittest.skipUnless(os.environ.get("PROJECT_TEST_DATABASE_URL"), "Process crash requires isolated PostgreSQL")
+    def test_process_exit_immediately_after_prepared_db_commit(self):
+        self.assertEqual(self.child_operation(crash_point="prepared"), 75)
+        self.assertEqual(self.status().json()["status"], "PREPARED")
+        self.assertFalse((self.shared / "refs/heads/main").exists())
+        locks = {str(p): p.read_bytes() for p in self.shared.rglob("*.lock")}
+        self.assertTrue(locks)
+        self.assertEqual(self.integrate().status_code, 503)
+        self.assertEqual(locks, {str(p): p.read_bytes() for p in self.shared.rglob("*.lock")})
+
+    @unittest.skipUnless(os.environ.get("PROJECT_TEST_DATABASE_URL"), "Process crash requires isolated PostgreSQL")
+    def test_process_exit_immediately_after_completed_db_commit(self):
+        self.assertEqual(self.child_operation(crash_point="completed"), 76)
+        self.assertEqual(self.status().json()["status"], "COMPLETED")
+        self.assertTrue((self.project_dir / "integration-journal/active.json").exists())
+        locks = {str(p): p.read_bytes() for p in self.shared.rglob("*.lock")}
+        self.assertTrue(locks)
+        self.assertEqual(self.integrate().status_code, 503)
+        self.assertEqual(locks, {str(p): p.read_bytes() for p in self.shared.rglob("*.lock")})
+
+    @unittest.skipUnless(os.environ.get("PROJECT_TEST_DATABASE_URL"), "Process crash requires isolated PostgreSQL")
+    def test_process_exit_immediately_after_journal_archive(self):
+        self.assertEqual(self.child_operation(crash_point="archive"), 77)
+        result = self.status().json()
+        self.assertEqual(result["status"], "COMPLETED")
+        journal = self.project_dir / "integration-journal"
+        self.assertFalse((journal / "active.json").exists())
+        self.assertTrue((journal / (result["operation_id"] + ".json")).exists())
+        locks = {str(p): p.read_bytes() for p in self.shared.rglob("*.lock")}
+        self.assertEqual(self.integrate().status_code, 503)
+        self.assertEqual(locks, {str(p): p.read_bytes() for p in self.shared.rglob("*.lock")})

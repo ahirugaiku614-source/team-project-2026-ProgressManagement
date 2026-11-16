@@ -139,3 +139,26 @@ class IntegrationMigrationTests(unittest.TestCase):
         with self.assertRaises(Error):
             self.migrate()
         self.assert_old_data()
+
+    def test_lookup_index_with_wrong_column_aborts_without_replacing_it(self):
+        from psycopg2 import Error
+        self.migrate()
+        with self.engine.begin() as conn:
+            conn.execute(text("DROP INDEX ix_change_request_integrations_integrated_by"))
+            conn.execute(text("CREATE INDEX ix_change_request_integrations_integrated_by ON change_request_integrations(status)"))
+        with self.assertRaises(Error):
+            self.migrate()
+        index = next(i for i in inspect(self.engine).get_indexes("change_request_integrations")
+                     if i["name"] == "ix_change_request_integrations_integrated_by")
+        self.assertEqual(index["column_names"], ["status"])
+        self.assert_old_data()
+
+    def test_deferred_operation_uniqueness_is_not_accepted_on_rerun(self):
+        from psycopg2 import Error
+        self.migrate()
+        with self.engine.begin() as conn:
+            conn.execute(text("ALTER TABLE change_request_integrations DROP CONSTRAINT uq_integration_operation"))
+            conn.execute(text("ALTER TABLE change_request_integrations ADD CONSTRAINT uq_integration_operation UNIQUE (operation_id) DEFERRABLE INITIALLY DEFERRED"))
+        with self.assertRaises(Error):
+            self.migrate()
+        self.assert_old_data()

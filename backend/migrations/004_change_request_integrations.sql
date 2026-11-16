@@ -66,14 +66,19 @@ BEGIN
         JOIN pg_attribute a ON a.attrelid = 'change_request_integrations'::regclass AND a.attname = expected.column_name
         LEFT JOIN pg_constraint c ON c.conrelid = a.attrelid AND c.contype = 'f' AND c.conkey = ARRAY[a.attnum]
             AND c.confrelid = to_regclass(expected.parent) AND c.confdeltype = 'r' AND c.convalidated
+            AND NOT c.condeferrable
             AND c.confkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = to_regclass(expected.parent) AND attname = 'id')]
         WHERE c.oid IS NULL
     ) OR NOT EXISTS (
         SELECT 1 FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attname = 'change_request_id'
+        JOIN pg_index i ON i.indexrelid = c.conindid AND i.indisunique AND i.indisvalid AND i.indisready AND i.indimmediate
         WHERE c.conrelid = 'change_request_integrations'::regclass AND c.contype = 'p' AND c.conkey = ARRAY[a.attnum]
+            AND NOT c.condeferrable
     ) OR NOT EXISTS (
         SELECT 1 FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attname = 'operation_id'
+        JOIN pg_index i ON i.indexrelid = c.conindid AND i.indisunique AND i.indisvalid AND i.indisready AND i.indimmediate
         WHERE c.conrelid = 'change_request_integrations'::regclass AND c.contype = 'u' AND c.conkey = ARRAY[a.attnum]
+            AND NOT c.condeferrable
     ) THEN
         RAISE EXCEPTION 'Unexpected integration schema; operator inspection required';
     END IF;
@@ -86,11 +91,27 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attname = 'project_id'
         WHERE i.indexrelid = 'uq_integration_pending_project'::regclass AND i.indrelid = 'change_request_integrations'::regclass
-            AND i.indisunique AND i.indisvalid AND i.indnkeyatts = 1 AND i.indkey[0] = a.attnum
+            AND i.indisunique AND i.indisvalid AND i.indisready AND i.indimmediate
+            AND i.indnkeyatts = 1 AND i.indkey[0] = a.attnum
             AND pg_get_expr(i.indpred, i.indrelid) = (SELECT pg_get_expr(indpred, indrelid)
                 FROM pg_index WHERE indexrelid = 'expected_pending_project'::regclass)
     ) THEN
         RAISE EXCEPTION 'Unexpected pending integration index; operator inspection required';
+    END IF;
+    -- IF NOT EXISTSは「同名なら別の列・別の表の索引でも成功」となるため、通常索引も検査する。
+    -- 既存索引をDROPして補正せず、全体をロールバックして運用者へ判断を返す。
+    IF EXISTS (
+        SELECT 1 FROM (VALUES
+            ('ix_change_request_integrations_project_id', 'project_id'),
+            ('ix_change_request_integrations_integrated_by', 'integrated_by')
+        ) AS expected(index_name, column_name)
+        LEFT JOIN pg_attribute a ON a.attrelid = 'change_request_integrations'::regclass AND a.attname = expected.column_name
+        LEFT JOIN pg_index i ON i.indexrelid = to_regclass(expected.index_name)
+            AND i.indrelid = a.attrelid AND i.indnkeyatts = 1 AND i.indkey[0] = a.attnum
+            AND i.indisvalid AND i.indisready AND i.indpred IS NULL AND i.indexprs IS NULL
+        WHERE i.indexrelid IS NULL
+    ) THEN
+        RAISE EXCEPTION 'Unexpected integration lookup index; operator inspection required';
     END IF;
 END $$;
 COMMIT;

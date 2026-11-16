@@ -8,6 +8,7 @@ Projectのflock・packed-refs.lockを保持した状態でGit標準のmain.lock�
 from contextlib import contextmanager
 import json
 import os
+import re
 import stat
 import uuid
 
@@ -15,6 +16,7 @@ from app.change_request_reviews import verified_object
 from app.project_storage import StorageConflict, StorageUnavailable
 
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+MAX_REPLAY_ANCESTRY = 256
 
 
 def canonical_operation_id(value):
@@ -37,9 +39,72 @@ def verify_initial_base(review, base):
     raw = verified_object(review, "commit", base)
     headers, message = raw.split(b"\n\n", 1)
     trees = [line[5:] for line in headers.splitlines() if line.startswith(b"tree ")]
-    if (trees != [EMPTY_TREE.encode()] or any(line.startswith(b"parent ") for line in headers.splitlines())
+    # 空treeとメッセージだけが同じ別のルートcommitも、初回用baseとは認めない。
+    # 生成時刻は復元しないが、既存main_commitが生成するauthor/committerの形式は照合する。
+    canonical_headers = (rb"tree " + EMPTY_TREE.encode() + rb"\nauthor Project Review <review@localhost> [0-9]+ \+0000"
+                         rb"\ncommitter Project Review <review@localhost> [0-9]+ \+0000")
+    if (trees != [EMPTY_TREE.encode()] or not re.fullmatch(canonical_headers, headers)
             or message != b"Empty review base\n" or verified_object(review, "tree", EMPTY_TREE) != b""):
         raise StorageConflict("Initial baseline is not a virtual empty root")
+
+
+def durable_file(directory, name):
+    """既存ファイルも再fsyncする。rename成功だけでは永続化済みと断定しない。
+
+    main/journalの公開後に親fsyncが失敗した場合、次の再送でこの処理を通す。
+    通常ファイル・単一リンクだけを開き、シンボリックリンクやFIFOを追わない。
+    """
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise StorageConflict("Unsafe integration persistence file")
+        os.fsync(fd)
+        os.fsync(directory)
+    finally:
+        os.close(fd)
+
+
+def sync_main(review, expected):
+    """mainのOID照合と永続化を、初回公開後・復旧時のどちらでも必ず実行する。
+
+    packed-onlyへ整理されていた場合も、実際に値を保持するpacked-refsとその親、
+    looseがないheadsの状態をfsyncする。main参照を再作成・上書きはしない。
+    """
+    if review.read_ref(("heads", "main")) != expected:
+        raise StorageConflict("Main changed before persistence confirmation")
+    with review.storage._directory(review.shared, "refs") as refs:
+        with review.storage._directory(refs, "heads") as heads:
+            try:
+                durable_file(heads, "main")
+            except FileNotFoundError:
+                durable_file(review.shared, "packed-refs")
+                os.fsync(heads)
+    if review.read_ref(("heads", "main")) != expected:
+        raise StorageConflict("Main changed during persistence confirmation")
+
+
+def verify_completed_main(review, record):
+    """COMPLETEDというDB状態だけを信用せず、現在mainに結果が含まれるか確認する。
+
+    本機能の履歴は一親のfast-forwardだけなので、ハッシュを検証しながら親を辿る。
+    後続の正常統合は許可するが、巻戻し・別履歴・欠落・破損・上限超過は停止する。
+    無制限に古い依頼を探索せず、上限を超えた場合は管理者確認とする。
+    """
+    current = review.read_ref(("heads", "main"))
+    if current is None:
+        raise StorageConflict("Completed integration main is missing")
+    tip = current
+    for _ in range(MAX_REPLAY_ANCESTRY + 1):
+        content = verified_object(review, "commit", current)
+        if current == record.main_after:
+            return tip
+        headers = content.split(b"\n\n", 1)[0].splitlines()
+        parents = [line[7:].decode("ascii") for line in headers if line.startswith(b"parent ")]
+        if len(parents) != 1:
+            break
+        current = review.oid(parents[0])
+    raise StorageConflict("Completed integration is not provable in current main")
 
 
 def operation_manifest(row):
@@ -79,6 +144,19 @@ class IntegrationJournal:
     def prepare(self, row):
         self.review.write_once(self.directory, "active.json",
                                json.dumps(operation_manifest(row), sort_keys=True).encode())
+
+    def sync_active(self, row):
+        """以前の公開後fsync失敗も考慮し、Git更新前にintentを再照合・同期する。"""
+        if self.read() != operation_manifest(row):
+            raise StorageConflict("Active integration journal disagrees with database")
+        durable_file(self.directory, "active.json")
+
+    def verify_archive(self, row):
+        """退避rename直後の失敗・停止でも、再送で内容と永続性を確かめ直す。"""
+        name = canonical_operation_id(row.operation_id) + ".json"
+        if self.read(name) != operation_manifest(row):
+            raise StorageConflict("Completed integration journal is missing or inconsistent")
+        durable_file(self.directory, name)
 
     def archive(self, row):
         """DBの確定後にだけactiveを退避する。既存アーカイブを上書きしない。"""
@@ -127,8 +205,9 @@ def locked_main(review):
                 check_owner()
                 if review.read_ref(("heads", "main")) != expected:
                     raise StorageConflict("Main changed before publication")
-                # 同じディレクトリ内のrenameがCASの公開点。
-                # 標準ロックを守るGit操作はこの間mainを書き換えられない。
+                # 同じディレクトリ内のrenameが公開点。CAS相当の保証は標準ロックを
+                # 守る書き込みに限る。read_ref直後〜renameの間にロック無視の直接操作が
+                # 入ることをOSは阻止しないため、そのようなライターとの排他は保証しない。
                 os.replace("main.lock", "main", src_dir_fd=heads, dst_dir_fd=heads)
                 consumed = True
                 os.fsync(heads)

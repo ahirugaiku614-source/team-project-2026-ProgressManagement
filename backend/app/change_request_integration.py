@@ -13,7 +13,10 @@ from sqlalchemy import text
 from app import models
 from app.change_request_reviews import ReviewForbidden, ReviewNotFound, verify_snapshot
 from app.change_requests import row_manifest
-from app.integration_git import IntegrationJournal, locked_main, operation_manifest, verify_initial_base
+from app.integration_git import (
+    IntegrationJournal, locked_main, operation_manifest, verify_initial_base,
+    verify_completed_main, sync_main,
+)
 from app.project_storage import StorageConflict
 from app.review_git import ReviewGit
 
@@ -63,7 +66,7 @@ def check_record(record, row):
 def reconcile_active(db, journal, project_id, request_id):
     """他の未確定操作・DBに対応しないジャーナルがあれば次の更新を止める。
 
-    DB確定後の退避だけが失敗したactiveは、安全にアーカイブできる。
+    DB確定後でもこの段階では退避しない。スナップショット・現在mainを検査してから退避する。
     DBを古いバックアップへ戻してactiveだけが残った場合も、推測で続行しない。
     """
     active = journal.read()
@@ -74,9 +77,7 @@ def reconcile_active(db, journal, project_id, request_id):
     ).populate_existing().with_for_update().first()
     if record is None or active != operation_manifest(record):
         raise StorageConflict("Unmatched integration journal; operator inspection required")
-    if record.status == "COMPLETED":
-        journal.archive(record)
-    elif record.change_request_id != request_id:
+    if record.change_request_id != request_id:
         raise StorageConflict("Another integration needs recovery first")
 
 
@@ -103,14 +104,22 @@ def integrate_change_request(db, storage, team_id, project_id, request_id, user_
 
                 with review.locked_review_refs(row_manifest(row)["ref_key"]):
                     verify_snapshot(review, row)
+                    if record is not None and record.main_before is None:
+                        # 再送でも初回用baseを必ず照合する。DBのNULL beforeだけを初回の証拠にしない。
+                        verify_initial_base(review, row.base_commit)
                     if record is not None and record.status == "COMPLETED":
                         # 後続統合でmainが進んでも、完了済み操作の再送は履歴上の同じ結果を返す。
                         # ただし永続記録の欠落は隠さない。mainを過去の値へ戻す処理はない。
-                        if journal.read(record.operation_id + ".json") != operation_manifest(record):
-                            raise StorageConflict("Completed integration journal is missing or inconsistent")
-                        result = integration_result(record)
-                        db.rollback()  # 読み取りで取得したDBロックを解放する。
-                        return result
+                        with locked_main(review):
+                            tip = verify_completed_main(review, record)
+                            sync_main(review, tip)
+                            if journal.read() is not None:
+                                journal.sync_active(record)
+                                journal.archive(record)
+                            journal.verify_archive(record)
+                            result = integration_result(record)
+                            db.rollback()  # 読み取りで取得したDBロックを解放する。
+                            return result
 
                     with locked_main(review) as publish:
                         current = review.read_ref(("heads", "main"))
@@ -142,6 +151,15 @@ def integrate_change_request(db, storage, team_id, project_id, request_id, user_
                             # 途中再開の操作主体を勝手に付け替えない。完了済みの閲覧・再送は許可する。
                             raise StorageConflict("Prepared integration must be resumed by its original member")
 
+                        # DBだけが古いPREPAREDに戻った場合、完了記録を無視して再公開しない。
+                        # 同じ操作IDのアーカイブがある時点で自動再開の根拠が矛盾している。
+                        if journal.read(record.operation_id + ".json") is not None:
+                            raise StorageConflict("Prepared operation already has an archive; operator inspection required")
+                        if record.main_before is None and db.query(models.ChangeRequestIntegration).filter(
+                            models.ChangeRequestIntegration.project_id == project_id,
+                            models.ChangeRequestIntegration.change_request_id != request_id,
+                        ).first():
+                            raise StorageConflict("Initial prepared operation conflicts with project history")
                         active = journal.read()
                         if active is None:
                             # DB準備の直後に停止した場合のみ記録を作り直せる。
@@ -151,6 +169,7 @@ def integrate_change_request(db, storage, team_id, project_id, request_id, user_
                             journal.prepare(record)
                         elif active != operation_manifest(record):
                             raise StorageConflict("Integration journal and database disagree")
+                        journal.sync_active(record)
 
                         if current == record.main_before:
                             # 初回・未更新の再試行どちらも、正式参照の直前にCASで現在値を再確認する。
@@ -158,6 +177,8 @@ def integrate_change_request(db, storage, team_id, project_id, request_id, user_
                         elif current != record.main_after:
                             raise StorageConflict("Main cannot prove this operation; operator inspection required")
                         # current==main_afterならGit更新後に停止した操作。参照を書き直さずDBだけを確定。
+                        # 前回rename直後のfsyncが失敗した可能性があるため、値が同じでも再同期する。
+                        sync_main(review, record.main_after)
                         record.status = "COMPLETED"
                         record.integrated_at = max(datetime.utcnow(), record.prepared_at)
                         result = integration_result(record)
