@@ -146,6 +146,25 @@ class ChangeRequestChanges(BaseModel):
         return value
 
 
+class ChangeRequestIntegrate(BaseModel):
+    """統合先・ユーザー・操作IDはサーバーで確定する。本文での指定を拒否する。"""
+    model_config = ConfigDict(extra="forbid")
+
+
+class ChangeRequestIntegrationResponse(BaseModel):
+    """PREPAREDを未統合と断定しない。再送でGitを照合してから確定する。"""
+    model_config = ConfigDict(from_attributes=True)
+    change_request_id: int
+    project_id: int
+    operation_id: UUID
+    integrated_by: int
+    status: Literal["PREPARED", "COMPLETED"]
+    prepared_at: datetime
+    integrated_at: Optional[datetime]
+    main_before: Optional[str]
+    main_after: str
+
+
 class ChangedFileResponse(BaseModel):
     path: str
     change: Literal["A", "M", "D"]

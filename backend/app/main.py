@@ -13,6 +13,7 @@ import secrets
 from sqlalchemy.exc import SQLAlchemyError
 from app.change_requests import submit_change_request, change_request_diff
 from app.change_request_reviews import decide_change_request, ReviewForbidden, ReviewNotFound
+from app.change_request_integration import integrate_change_request
 from app.review_git import ReviewInvalid, ReviewLimit
 from app.project_storage import get_project_storage, ProjectStorage, StorageConflict, StorageUnavailable
 
@@ -638,6 +639,58 @@ def request_change_request_changes(
         db, storage, project.team_id, project.id, row.id, user.id,
         "CHANGES_REQUESTED", payload.reason,
     ))
+
+
+def integration_operation(operation):
+    """統合の内部エラーは公開しない。503は同じ依頼の状態確認・再送を案内する。
+
+    Gitが更新済みでも503となる場合があるため、「未統合」とは断定しない。
+    不整合の409では自動上書きせず、利用者・管理者が確認できる状態を維持する。
+    """
+    try:
+        return operation()
+    except ReviewForbidden as error:
+        raise HTTPException(status_code=403, detail="You cannot integrate this request") from error
+    except ReviewNotFound as error:
+        raise HTTPException(status_code=404, detail="Change request not found") from error
+    except (StorageConflict, ReviewInvalid, ReviewLimit, UnicodeError, ValueError) as error:
+        raise HTTPException(status_code=409, detail="Integration conflict; check the request and contact an administrator if recovery is needed") from error
+    except (StorageUnavailable, SQLAlchemyError, OSError) as error:
+        raise HTTPException(status_code=503, detail="Integration unavailable; check integration status and retry the same request") from error
+
+
+@app.post("/api/teams/{team_id}/projects/{project_id}/change-requests/{change_request_id}/integrate",
+          response_model=schemas.ChangeRequestIntegrationResponse)
+def integrate_approved_change_request(
+    payload: schemas.ChangeRequestIntegrate | None = None,
+    row: models.ChangeRequest = Depends(get_accessible_change_request),
+    project: models.Project = Depends(get_accessible_project),
+    user: models.User = Depends(get_project_team_member),
+    storage: ProjectStorage = Depends(get_project_storage),
+    db: Session = Depends(get_db),
+):
+    """承認済みの固定スナップショットだけを共有mainへ設定する。本文は不要。
+
+    統合者ID・パス・Git操作は指定させず、Firebase UIDから解決した本人を使う。
+    所属や承認はサービス内でもDBロック下で読み直す。個人作業領域は変更しない。
+    """
+    return integration_operation(lambda: integrate_change_request(
+        db, storage, project.team_id, project.id, row.id, user.id,
+    ))
+
+
+@app.get("/api/teams/{team_id}/projects/{project_id}/change-requests/{change_request_id}/integration",
+         response_model=schemas.ChangeRequestIntegrationResponse | None)
+def get_change_request_integration(
+    row: models.ChangeRequest = Depends(get_accessible_change_request),
+    db: Session = Depends(get_db),
+):
+    """nullは未準備、PREPAREDはGit更新済みかもしれない、COMPLETEDは記録確定。
+
+    認証・所属・Project対応は通常の詳細APIと同じ。読み取りでGitを修復しない。
+    PREPAREDの確定には、元の統合者が同じPOSTを再送して照合する必要がある。
+    """
+    return integration_operation(lambda: db.query(models.ChangeRequestIntegration).filter_by(change_request_id=row.id).first())
 
 
 #チーム共有タスク作成 (POST /api/teams/{team_id}/tasks)
