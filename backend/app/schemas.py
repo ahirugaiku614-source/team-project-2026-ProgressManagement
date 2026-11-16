@@ -1,6 +1,8 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Literal, Optional
 from datetime import datetime
+from uuid import UUID
+from pydantic import ConfigDict
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -69,6 +71,61 @@ class ProjectRepositoryState(BaseModel):
 class ProjectWorkspaceState(ProjectRepositoryState):
     user_id: int
     workspace_state: Literal["missing", "ready", "incomplete"]
+
+
+class ChangeRequestCreate(BaseModel):
+    # 他人のユーザーID・パス・Gitコマンドなどの余計な入力も受け付けない。
+    model_config = ConfigDict(extra="forbid")
+    request_key: UUID
+    title: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=10000)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def trim_title(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("title", "description")
+    @classmethod
+    def validate_utf8(cls, value):
+        if value is not None:
+            value.encode("utf-8")
+            if any(ord(c) < 32 and c not in "\n\r\t" or ord(c) == 127 for c in value):
+                raise ValueError("Control characters are not allowed.")
+        return value
+
+
+class ChangeRequestResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    project_id: int
+    submitted_by: int
+    submitter_name: Optional[str] = None
+    request_key: UUID
+    title: str
+    description: Optional[str]
+    state: Literal["OPEN", "CLOSED"]
+    snapshot_commit: str
+    base_commit: str
+    git_ref: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChangedFileResponse(BaseModel):
+    path: str
+    change: Literal["A", "M", "D"]
+    binary: bool
+    mode_changed: bool
+    patch: Optional[str]
+    truncated: bool
+
+
+class ChangeRequestDiffResponse(BaseModel):
+    base_commit: str
+    snapshot_commit: str
+    files: list[ChangedFileResponse]
+    truncated: bool
 
 
 # チーム情報の返却データ

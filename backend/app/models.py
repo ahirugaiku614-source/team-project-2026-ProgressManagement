@@ -8,6 +8,8 @@ from sqlalchemy import (
     DateTime,
     Enum,
     UniqueConstraint,
+    CheckConstraint,
+    Index,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -85,6 +87,41 @@ class Project(Base):
 
     team = relationship("Team", back_populates="projects")
     creator = relationship("User", foreign_keys=[created_by])
+    change_requests = relationship("ChangeRequest", back_populates="project")
+
+
+class ChangeRequest(Base):
+    """提出後に変更しないコミットと、再試行用の提出キーを保存する。"""
+    __tablename__ = "change_requests"
+    __table_args__ = (
+        UniqueConstraint("project_id", "submitted_by", "request_key", name="uq_change_request_key"),
+        UniqueConstraint("git_ref", name="uq_change_request_git_ref"),
+        CheckConstraint("state IN ('OPEN', 'CLOSED')", name="ck_change_request_state"),
+        CheckConstraint("length(title) BETWEEN 1 AND 200", name="ck_change_request_title"),
+        CheckConstraint("description IS NULL OR length(description) <= 10000", name="ck_change_request_description"),
+        CheckConstraint("length(snapshot_commit) = 40 AND length(base_commit) = 40", name="ck_change_request_commits"),
+        Index("ix_change_requests_project_created", "project_id", "created_at", "id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False)
+    submitted_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    request_key = Column(String(36), nullable=False)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    state = Column(String(16), nullable=False, default="OPEN", server_default="OPEN")
+    snapshot_commit = Column(String(40), nullable=False)
+    base_commit = Column(String(40), nullable=False)
+    git_ref = Column(String(128), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("Project", back_populates="change_requests")
+    submitter = relationship("User")
+
+    @property
+    def submitter_name(self):
+        return self.submitter.name
 
 
 # チームメンバーテーブル

@@ -408,7 +408,7 @@ class AdditiveSchemaTests(unittest.TestCase):
     def test_create_all_preserves_existing_data_and_is_repeatable(self):
         engine = test_engine()
         self.addCleanup(close_test_engine, engine)
-        legacy_tables = [t for t in models.Base.metadata.sorted_tables if t.name != "projects"]
+        legacy_tables = [t for t in models.Base.metadata.sorted_tables if t.name not in ("projects", "change_requests")]
         models.Base.metadata.create_all(engine, tables=legacy_tables)
         with sessionmaker(bind=engine)() as db:
             user = models.User(firebase_uid="existing", email="existing@example.com")
