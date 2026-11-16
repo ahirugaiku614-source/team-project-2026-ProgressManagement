@@ -118,10 +118,68 @@ class ChangeRequest(Base):
 
     project = relationship("Project", back_populates="change_requests")
     submitter = relationship("User")
+    # 判定は提出情報と別に保持する。未判定の依頼には子レコードがないため、
+    # 既存データを書き換えずにPENDINGとして扱える。
+    # selectinで一覧分の判定をまとめて取得し、FOR UPDATEの対象行へ外部結合しない。
+    review = relationship("ChangeRequestReview", back_populates="change_request", uselist=False, lazy="selectin")
 
     @property
     def submitter_name(self):
         return self.submitter.name
+
+    @property
+    def review_decision(self):
+        """提出依頼のOPEN/CLOSEDとは独立した、レビューの判定を返す。"""
+        return self.review.decision if self.review else "PENDING"
+
+    @property
+    def reviewer_id(self):
+        """未判定なら判定者はいない。提出者IDを代用しない。"""
+        return self.review.reviewer_id if self.review else None
+
+    @property
+    def reviewer_name(self):
+        """判定者名は認証済みUserの記録から参照し、リクエスト本文から保存しない。"""
+        return self.review.reviewer.name if self.review else None
+
+    @property
+    def reviewed_at(self):
+        """判定が確定したUTC日時。既存の提出日時を変更せずに返す。"""
+        return self.review.reviewed_at if self.review else None
+
+    @property
+    def review_reason(self):
+        """差し戻し理由。未判定・承認の場合はnullを返す。"""
+        return self.review.reason if self.review else None
+
+
+class ChangeRequestReview(Base):
+    """一つの依頼に一つの確定判定を記録する。PENDINGはレコードなしで表現する。"""
+    __tablename__ = "change_request_reviews"
+    __table_args__ = (
+        CheckConstraint("decision IN ('APPROVED', 'CHANGES_REQUESTED')", name="ck_request_review_decision"),
+        # CHECKはNULLを許容する性質があるため、差し戻し側ではIS NOT NULLも明示する。
+        CheckConstraint(
+            "(decision = 'APPROVED' AND reason IS NULL) OR "
+            "(decision = 'CHANGES_REQUESTED' AND reason IS NOT NULL "
+            "AND length(trim(reason)) BETWEEN 1 AND 2000)",
+            name="ck_request_review_reason",
+        ),
+        # 開発用Composeはソースをbind mountして自動reloadするため、
+        # モデルを追加しただけで実DBにDDLを流さないよう明示的な移行を必須にする。
+        {"info": {"requires_explicit_migration": True}},
+    )
+
+    # 依頼IDを主キーにすることで、アプリの行ロックを使わない別経路からの
+    # 同時INSERTがあっても、DBが二件目の判定を受け付けない。
+    change_request_id = Column(Integer, ForeignKey("change_requests.id", ondelete="RESTRICT"), primary_key=True)
+    decision = Column(String(20), nullable=False)
+    reviewer_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    reviewed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    reason = Column(String(2000), nullable=True)
+
+    change_request = relationship("ChangeRequest", back_populates="review")
+    reviewer = relationship("User", lazy="selectin")
 
 
 # チームメンバーテーブル

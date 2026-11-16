@@ -351,30 +351,38 @@ class ReviewGit:
             raise ReviewLimit("Review file exceeds the size limit")
         return self.run("cat-file", "blob", oid)
 
-    def ensure_refs(self, manifest):
+    @contextmanager
+    def locked_review_refs(self, ref_key):
+        """base/headの検査から処理確定まで、外部の通常Git操作にもロックを示す。
+
+        参照作成だけでなく判定時の読み取りにも使う。packed-onlyの場合には
+        ロック配置用ディレクトリだけを準備し、正式な参照は作成・変更しない。
+        """
         from contextlib import ExitStack
-        ref_key = manifest.get("ref_key")
         if not isinstance(ref_key, str) or not re.fullmatch(r"[0-9a-f]{32}", ref_key):
             raise StorageConflict("Invalid review reference key")
-        for key in ("base_commit", "snapshot_commit"):
-            self.commit_exists(manifest[key])
-        # packedの確認後に別のGit操作が値を書き込む競合も防ぐ。待たずに失敗するためデッドロックしない。
         with self.git_lock(self.shared, "packed-refs.lock"), self.storage._directory(self.shared, "refs") as refs:
             with self.new_directory(refs, "change-requests") as reviews:
                 with self.new_directory(reviews, ref_key) as review, ExitStack() as locks:
-                    pairs = (("base", "base_commit"), ("head", "snapshot_commit"))
-                    for name, _ in pairs:
+                    for name in ("base", "head"):
                         locks.enter_context(self.git_lock(review, name + ".lock"))
-                    # 両方の検査が通るまで書き込まない。片方が不一致なら他方の欠落も補わない。
-                    missing = []
-                    for name, key in pairs:
-                        actual = self.read_ref(("change-requests", ref_key, name))
-                        if actual is not None and actual != manifest[key]:
-                            raise StorageConflict("Existing review reference does not match")
-                        if actual is None:
-                            missing.append((name, key))
-                    for name, key in missing:
-                        self.write_once(review, name, (manifest[key] + "\n").encode())
+                    yield review
+
+    def ensure_refs(self, manifest):
+        for key in ("base_commit", "snapshot_commit"):
+            self.commit_exists(manifest[key])
+        ref_key = manifest.get("ref_key")
+        with self.locked_review_refs(ref_key) as review:
+            # 両方の検査が通るまで書き込まない。片方が不一致なら他方の欠落も補わない。
+            missing = []
+            for name, key in (("base", "base_commit"), ("head", "snapshot_commit")):
+                actual = self.read_ref(("change-requests", ref_key, name))
+                if actual is not None and actual != manifest[key]:
+                    raise StorageConflict("Existing review reference does not match")
+                if actual is None:
+                    missing.append((name, key))
+            for name, key in missing:
+                self.write_once(review, name, (manifest[key] + "\n").encode())
 
     def manifest(self, ref_key):
         if not re.fullmatch(r"[0-9a-f]{32}", ref_key):

@@ -5,18 +5,20 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from app.firebase import verify_firebase_token
-from app.db.database import engine, get_db, Base
+from app.db.database import engine, get_db, Base, create_startup_tables
 import app.models as models
 import app.schemas as schemas
 from typing import List
 import secrets
 from sqlalchemy.exc import SQLAlchemyError
 from app.change_requests import submit_change_request, change_request_diff
+from app.change_request_reviews import decide_change_request, ReviewForbidden, ReviewNotFound
 from app.review_git import ReviewInvalid, ReviewLimit
 from app.project_storage import get_project_storage, ProjectStorage, StorageConflict, StorageUnavailable
 
-# データベーステーブルの自動生成
-models.Base.metadata.create_all(bind=engine)
+# 従来の初期テーブルだけを自動生成する。レビュー判定テーブルは自動reloadで
+# 稼働DBへ作成せず、003マイグレーションを明示的に適用した場合だけ利用する。
+create_startup_tables(engine)
 
 app = FastAPI()
 
@@ -579,6 +581,63 @@ def get_change_request_diff(
     storage: ProjectStorage = Depends(get_project_storage),
 ):
     return review_operation(lambda: change_request_diff(storage, row))
+
+
+def review_decision_operation(operation):
+    """判定処理の失敗をHTTPへ変換する。DB・パス・Gitの生のエラーは公開しない。
+
+    コミット後の応答だけ失われた可能性もあるため、503時には再送を促すだけでなく
+    詳細APIで確定結果を確認するよう案内する。既存の提出APIの再試行仕様は変えない。
+    """
+    try:
+        return operation()
+    except ReviewForbidden as error:
+        raise HTTPException(status_code=403, detail="You cannot review this request") from error
+    except ReviewNotFound as error:
+        raise HTTPException(status_code=404, detail="Change request not found") from error
+    except (StorageConflict, ReviewInvalid, ReviewLimit, UnicodeError) as error:
+        raise HTTPException(status_code=409, detail="Review state or Git snapshot is inconsistent") from error
+    except (StorageUnavailable, SQLAlchemyError, OSError) as error:
+        raise HTTPException(status_code=503, detail="Review decision unavailable; check the request detail before retrying") from error
+
+
+@app.post("/api/teams/{team_id}/projects/{project_id}/change-requests/{change_request_id}/approve", response_model=schemas.ChangeRequestResponse)
+def approve_change_request(
+    payload: schemas.ChangeRequestApprove | None = None,
+    row: models.ChangeRequest = Depends(get_accessible_change_request),
+    project: models.Project = Depends(get_accessible_project),
+    user: models.User = Depends(get_project_team_member),
+    storage: ProjectStorage = Depends(get_project_storage),
+    db: Session = Depends(get_db),
+):
+    """他メンバーがOPEN/PENDINGの提出を承認する。Git mainへの統合は行わない。
+
+    bodyは不要で、{}も許可する。判定者IDはpayloadから取らず、Firebase UIDから
+    解決したUserを使う。ProjectとTeamの対応・所属は既存の依存関数で先に確認する。
+    """
+    return review_decision_operation(lambda: decide_change_request(
+        db, storage, project.team_id, project.id, row.id, user.id, "APPROVED",
+    ))
+
+
+@app.post("/api/teams/{team_id}/projects/{project_id}/change-requests/{change_request_id}/request-changes", response_model=schemas.ChangeRequestResponse)
+def request_change_request_changes(
+    payload: schemas.ChangeRequestChanges,
+    row: models.ChangeRequest = Depends(get_accessible_change_request),
+    project: models.Project = Depends(get_accessible_project),
+    user: models.User = Depends(get_project_team_member),
+    storage: ProjectStorage = Depends(get_project_storage),
+    db: Session = Depends(get_db),
+):
+    """理由付きで差し戻す。提出済みスナップショットを編集・差し替えない。
+
+    差し戻し後の修正は既存の提出APIで新しい依頼として送る。今回の依頼の判定を
+    PENDINGへ戻したり、承認へ上書きしたりする操作は提供しない。
+    """
+    return review_decision_operation(lambda: decide_change_request(
+        db, storage, project.team_id, project.id, row.id, user.id,
+        "CHANGES_REQUESTED", payload.reason,
+    ))
 
 
 #チーム共有タスク作成 (POST /api/teams/{team_id}/tasks)
