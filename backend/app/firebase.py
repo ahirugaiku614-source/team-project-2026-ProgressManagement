@@ -27,9 +27,11 @@ def verify_firebase_token(res: HTTPAuthorizationCredentials = Security(security)
         # トークンの検証（期限切れや改ざんをチェック）
         decoded_token = auth.verify_id_token(token)
         return decoded_token  # 検証成功時にユーザー情報を返す
-    except Exception as e:
+    except Exception:
+        # SDK例外にはトークン・内部パス・接続先等が含まれる可能性がある。
+        # 既存の検証モード、401、WWW-Authenticateは維持し、本文だけを固定する。
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid or expired authentication token: {str(e)}",
+            detail="Invalid or expired authentication token",
             headers={"WWW-Authenticate": "Bearer"},
-        )
+        ) from None

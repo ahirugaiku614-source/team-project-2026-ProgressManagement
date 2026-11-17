@@ -469,6 +469,12 @@ def get_accessible_project(
     return project
 
 
+# 稼働基盤未準備の個人エディタ用制御API。既存の所属・Project対応の解決処理を再利用する。
+# 起動・停止・セッション発行は常に拒否し、保存領域や既存code-serverには触れない。
+from app.editor_api import create_editor_router
+app.include_router(create_editor_router(get_project_team_member, get_accessible_project))
+
+
 def project_storage_operation(storage, project_id, user_id=None, initialize=False):
     try:
         if initialize:
