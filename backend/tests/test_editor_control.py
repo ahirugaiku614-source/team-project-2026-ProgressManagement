@@ -6,6 +6,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from pydantic import ValidationError
+from sqlalchemy.orm import sessionmaker
 from starlette.websockets import WebSocketDisconnect
 
 import test_projects as fixtures
@@ -125,6 +126,36 @@ class EditorControlTests(unittest.TestCase):
         self.db.commit()
         for method, suffix in (("GET", ""), ("POST", "/start"), ("POST", "/stop"), ("POST", "/sessions")):
             self.assertEqual(self.request(method, self.editor + suffix).status_code, 403)
+
+    def test_dependency_cache_is_per_request_and_separate_committed_removal_is_observed(self):
+        # 実リクエスト中はproject/bindingが共有する依存を一回だけ解決する。
+        # 別接続で確定した削除後には、同じトークン・同じクライアントでも再評価が必要。
+        team_id, user_id = self.team.id, self.member.id
+        self.strict_auth.reset_mock()
+        self.assertEqual(self.request("GET", self.editor).status_code, 200)
+        self.strict_auth.assert_called_once_with("member", check_revoked=True)
+        with sessionmaker(bind=self.engine)() as other:
+            other.query(models.TeamMember).filter_by(team_id=team_id, user_id=user_id).delete()
+            other.commit()
+        for method, suffix in (("GET", ""), ("POST", "/start"), ("POST", "/stop"), ("POST", "/sessions")):
+            self.strict_auth.reset_mock()
+            self.assertEqual(self.request(method, self.editor + suffix).status_code, 403)
+            self.strict_auth.assert_called_once_with("member", check_revoked=True)
+        self.assertEqual(self.request("GET", self.editor, uid="owner").status_code, 200)
+
+    def test_legacy_authentication_error_is_sanitized_without_changing_verification_mode(self):
+        # 共通authオブジェクトを共有しても、新旧のDependsは別々の検証関数を使用する。
+        for error in (ValueError("private-token /server/private-key https://private-endpoint"), OSError("private-connection")):
+            for url in ("/api/me", "/api/teams", self.url):
+                with patch("app.firebase.auth.verify_id_token", side_effect=error) as verifier:
+                    response = self.request("GET", url)
+                    self.assertEqual(response.status_code, 401)
+                    self.assertEqual(response.headers["www-authenticate"], "Bearer")
+                    self.assertEqual(response.json(), {"detail": "Invalid or expired authentication token"})
+                    self.assertNotIn("private", response.text)
+                    verifier.assert_called_once_with("member")  # 既存APIへcheck_revokedを追加しない。
+        self.assertEqual(self.request("GET", self.url).status_code, 200)
+        self.assertEqual(self.request("GET", self.editor).status_code, 200)
 
     def test_revoked_disabled_or_unverifiable_firebase_token_fails_without_details(self):
         for error in (ValueError("private-token /firebase/private-path"), OSError("private-network-error")):

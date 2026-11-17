@@ -8,7 +8,8 @@ import json
 import os
 import subprocess
 import unittest
-import uuid
+
+from tools.editor_lab_resources import LabResources
 
 
 @unittest.skipUnless(os.environ.get("EDITOR_LAB_IMAGE_ID"), "Opt-in diagnostic container test; no editor launch")
@@ -25,43 +26,21 @@ class EditorContainerLabTests(unittest.TestCase):
         self.assertRegex(self.image, r"^sha256:[0-9a-f]{64}$")
         image = json.loads(self.docker("image", "inspect", self.image))[0]
         self.assertEqual(image["Config"]["Labels"].get("org.team-progress.editor-lab"), "v1")
-        self.run_id = uuid.uuid4().hex
-        self.resources = []
-        self.addCleanup(self.cleanup_resources)
-
-    def cleanup_resources(self):
-        # 作成を確認した試験リソースだけを逆順に片付ける。prune・既存環境の停止は禁止。
-        for kind, name in reversed(self.resources):
-            info = json.loads(self.docker(kind, "inspect", name))[0]
-            labels = info.get("Labels", {}) if kind == "volume" else info["Config"].get("Labels", {})
-            self.assertEqual(labels.get("org.team-progress.editor-lab-run"), self.run_id)
-            self.assertTrue(name.startswith("editor-lab-" + self.run_id + "-"))
-            if kind == "container":
-                self.docker("container", "rm", name)
-            else:
-                self.docker("volume", "rm", name)
+        self.lab = LabResources(self.docker)
+        self.addCleanup(self.lab.cleanup)
 
     def volume(self, role):
         self.assertIn(role, ("user-a", "user-b", "other-project", "shared"))
-        name = "editor-lab-" + self.run_id + "-" + role
-        # 万一同名が存在したら作成・使用しない。UUIDでも衝突を安全に扱う。
-        existing = self.docker("volume", "ls", "--filter", "name=^" + name + "$", "--format", "{{.Name}}")
-        self.assertEqual(existing, "")
-        self.assertEqual(self.docker("volume", "create", "--label", "org.team-progress.editor-lab-run=" + self.run_id, name), name)
-        self.resources.append(("volume", name))
-        return name
+        return self.lab.volume(role)
 
     def container(self, role, mode, volume):
-        self.assertIn(("volume", volume), self.resources)
-        name = "editor-lab-" + self.run_id + "-container-" + uuid.uuid4().hex
+        self.assertTrue(self.lab.confirmed("volume", volume))
         # データは今回作った本人相当のボリューム一つだけ。ネットワーク・公開ポートなし。
-        self.docker("create", "--name", name, "--label", "org.team-progress.editor-lab-run=" + self.run_id,
-                    "--user", "1000:1000", "--network", "none", "--ipc", "none", "--read-only",
+        name = self.lab.container(["--user", "1000:1000", "--network", "none", "--ipc", "none", "--read-only",
                     "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
                     "--memory", "128m", "--cpus", "0.5", "--pids-limit", "32",
                     "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=16m,uid=1000,gid=1000,mode=0700",
-                    "--mount", "type=volume,source=" + volume + ",target=/workspace", self.image, role, mode)
-        self.resources.append(("container", name))
+                    "--mount", "type=volume,source=" + volume + ",target=/workspace", self.image, role, mode])
         info = json.loads(self.docker("container", "inspect", name))[0]
         self.assertEqual([(m["Name"], m["Destination"]) for m in info["Mounts"] if m["Type"] == "volume"], [(volume, "/workspace")])
         self.assertFalse(info["HostConfig"]["Privileged"])
@@ -70,7 +49,8 @@ class EditorContainerLabTests(unittest.TestCase):
         return name
 
     def start(self, name):
-        self.assertIn(("container", name), self.resources)
+        self.assertTrue(self.lab.confirmed("container", name))
+        self.lab.check_daemon()
         report = json.loads(self.docker("start", "-a", name))
         self.assertTrue(report["diagnostics_passed"], report)
         self.assertFalse(report["editor_launch_enabled"])

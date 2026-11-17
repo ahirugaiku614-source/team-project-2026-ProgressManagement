@@ -24,7 +24,7 @@ Linux・seccomp・CPU/メモリ/PID上限は確認できたが、rootless・runs
 | --- | --- |
 | Compose | backendのソースbind mount、PostgreSQLの既存保存領域、project_storageを保持。Composeは変更しない |
 | code-server | 共通PASSWORD・code_server_workspaceを使うローカル検証用。個人別認証へ転用しない。Dockerfileも変更しない |
-| Firebase | 既存verify_firebase_tokenは維持。新しいエディタAPIだけcheck_revoked=Trueと安全なエラー応答を使用 |
+| Firebase | 既存APIの検証モードは維持。追加レビューで既存APIもエラー本文を固定化。エディタAPIだけcheck_revoked=Trueを使用 |
 | 所属 | get_project_team_member/get_accessible_projectを再利用。UIDからUserを取り、現在のTeamMemberとProject.team_idを毎要求確認 |
 | 保存 | ProjectStorageはbackend所有0700、projects/ID/workspaces/USER。非rootで直接編集できると仮定せず、権限一括変更はしない |
 | Git | 同じProject下のshared.gitとreview/integration-journalはbackend専用。エディタへマウントしない |
@@ -177,10 +177,21 @@ Aが編集できること、B/別Project/共有Gitが見えないこと、AのGi
 同じ停止済みAコンテナを再起動し、さらに新コンテナでも同じ新規ボリュームの編集を確認する。
 Aの操作後にB/別Projectの内容と共有bareのmainが不変なことも確認する。
 
-後片付けは作成を確認したリソースだけを逆順に行い、名前・所有ラベルが違えば止める。
+作成前に実行ID・正確な計画名を新規ローカルジャーナルへ保存し、その場所を表示する。
+Dockerの作成応答やinspectが不明ならUNCERTAINとし、関連する確認済みリソースも含めて保全する。
+後片付けは全件の名前・ラベル・ID/作成時刻・デーモンID・停止状態を先に照合する。
+確認済みコンテナを不変IDで先に削除し、その後に今回の確認済みボリュームだけを片付ける。
+ジャーナルは成功後もREMOVEDの記録として保持する。
 既存名を入力できるインターフェース、prune、汎用コンテナ停止機能はない。
-作成応答不明や診断失敗で残存物が疑われる場合は、記録・ラベルを保全して個別確認し、
-環境全体を掃除するコマンドは使わない。
+作成応答不明や診断失敗で残存物が疑われる場合は、次の読み取り専用レポートで確認する。
+Dockerに接続できなくても、保存済みの正確な計画名を報告する。不在と接続不能は混同しない。
+レポートからの自動削除・再採用機能はない。環境全体を掃除するコマンドは使わない。
+
+```powershell
+python tools/editor_lab_resources.py --report <テストが表示したジャーナルJSONのパス>
+```
+
+追加確認の原因・失敗時の復旧・認証互換性は[PR #9追加レビュー](editor-control-safety-review.md)を参照。
 
 ホストのbackendディレクトリから再実行する例（既存環境へ適用する操作ではない）：
 
@@ -215,6 +226,11 @@ Dockerビルド、git diff --checkも成功。既存TestClientの非推奨警告
 実Firebase通信、実ワーカー、署名許可/mTLS、TLS/Cookie交換、接続中WS失効、
 悪意ある任意コード、実code-server、既存保存先の移行は未検証・未実装として区別する。
 実行基盤の事前判定はblockedのままであり、診断成功で実行を有効化していない。
+
+マージ前の追加確認では、230件の最終回帰がLinux/PGで228件成功・2件スキップ、
+Linux/SQLiteで201件成功・29件スキップ、Windowsで68件成功・162件スキップ。
+実診断1件も別途成功した。依存関係・残存物の読み取り専用確認・既存Firebaseエラー本文の
+互換性については[追加レビュー](editor-control-safety-review.md)を参照。
 
 ## 要件ごとの検証範囲
 
