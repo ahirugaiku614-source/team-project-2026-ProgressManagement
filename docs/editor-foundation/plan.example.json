@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "mode": "DESIGN_ONLY",
+  "isolation": "VM_PER_USER_PROJECT",
+  "launch_enabled": false,
+  "infrastructure_prepared": false,
+  "guest": {
+    "os": "LINUX",
+    "non_root": true,
+    "dedicated_kernel": true,
+    "host_shares": false,
+    "docker_socket": false,
+    "app_credentials": false,
+    "public_ports": false
+  },
+  "network": {
+    "enforcement": "OUTSIDE_GUEST",
+    "guest_new_egress": "DENY",
+    "ipv6": "DENY_UNTIL_VERIFIED",
+    "metadata": "DENY",
+    "service_channels": [
+      {"source": "browser", "target": "gateway", "protocol": "https", "port": 443},
+      {"source": "application", "target": "manager", "protocol": "mtls", "port": 8443},
+      {"source": "gateway", "target": "authorizer", "protocol": "mtls", "port": 8443},
+      {"source": "manager", "target": "authorizer", "protocol": "mtls", "port": 8443},
+      {"source": "manager", "target": "hypervisor", "protocol": "mtls", "port": 16514},
+      {"source": "gateway", "target": "editor_vm", "protocol": "mtls", "port": 8443}
+    ]
+  },
+  "https": {
+    "app_origin": "https://app.example.com",
+    "editor_suffix": "editors.example.net",
+    "dns_address_example": "192.0.2.10",
+    "tls": "PLANNED_NOT_ISSUED",
+    "gateway": "NOT_IMPLEMENTED",
+    "http_auth_each_request": true,
+    "ws_auth_before_accept": true,
+    "ws_recheck_seconds": 15,
+    "session_max_seconds": 300,
+    "cookie": "__Host-editor",
+    "cookie_secure": true,
+    "cookie_http_only": true,
+    "cookie_same_site": "Lax",
+    "cookie_domain": null,
+    "cookie_path": "/",
+    "strip_upstream_credentials": true
+  },
+  "storage": {
+    "dedicated_data_disk": true,
+    "delete_on_stop": false,
+    "legacy_access": false,
+    "migration": "NOT_IMPLEMENTED",
+    "submission_bridge": "NOT_IMPLEMENTED"
+  },
+  "capacity": {
+    "host_vcpu": 12,
+    "reserved_vcpu": 4,
+    "guest_vcpu": 2,
+    "host_memory_mib": 32768,
+    "reserved_memory_mib": 8192,
+    "guest_memory_mib": 4096,
+    "host_disk_gib": 512,
+    "reserved_disk_gib": 64,
+    "guest_root_gib": 16,
+    "guest_data_gib": 20,
+    "backup_budget_gib": 256,
+    "max_running": 4,
+    "max_retained": 4
+  }
+}
