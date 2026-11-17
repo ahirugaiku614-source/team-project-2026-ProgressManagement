@@ -1,5 +1,8 @@
 # 第7段階：個人エディタの制御と隔離の準備
 
+第8段階の[専用Linux基盤設計](editor-foundation/architecture.md)で、User×Project別VMを
+推奨方式として具体化しています。実行無効ゲートや本資料の既存実装は変更していません。
+
 ## 今回の範囲と停止条件
 
 最新mainのd0d5ae0を基点に、`feat/isolated-user-editors`で作業する。

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "environment": "NOT_PREPARED",
+  "checks": {
+    "dedicated_host": {"status": "NOT_RUN", "evidence_id": null},
+    "kvm_available": {"status": "NOT_RUN", "evidence_id": null},
+    "hypervisor_confinement": {"status": "NOT_RUN", "evidence_id": null},
+    "vm_binding": {"status": "NOT_RUN", "evidence_id": null},
+    "storage_boundary": {"status": "NOT_RUN", "evidence_id": null},
+    "ipv4_ipv6_egress": {"status": "NOT_RUN", "evidence_id": null},
+    "metadata_block": {"status": "NOT_RUN", "evidence_id": null},
+    "no_secrets_sockets": {"status": "NOT_RUN", "evidence_id": null},
+    "gateway_only": {"status": "NOT_RUN", "evidence_id": null},
+    "dns_tls": {"status": "NOT_RUN", "evidence_id": null},
+    "firebase_revocation": {"status": "NOT_RUN", "evidence_id": null},
+    "host_cookie_binding": {"status": "NOT_RUN", "evidence_id": null},
+    "csrf_origin": {"status": "NOT_RUN", "evidence_id": null},
+    "ws_upgrade": {"status": "NOT_RUN", "evidence_id": null},
+    "ws_revocation": {"status": "NOT_RUN", "evidence_id": null},
+    "worker_mtls_nonce": {"status": "NOT_RUN", "evidence_id": null},
+    "lifecycle_fencing": {"status": "NOT_RUN", "evidence_id": null},
+    "data_retention": {"status": "NOT_RUN", "evidence_id": null},
+    "submission_snapshot": {"status": "NOT_RUN", "evidence_id": null},
+    "backup_restore": {"status": "NOT_RUN", "evidence_id": null},
+    "resource_quotas": {"status": "NOT_RUN", "evidence_id": null},
+    "logs_no_secrets": {"status": "NOT_RUN", "evidence_id": null},
+    "legacy_regression": {"status": "NOT_RUN", "evidence_id": null}
+  }
+}

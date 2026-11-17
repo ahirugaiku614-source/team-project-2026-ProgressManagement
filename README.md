@@ -21,3 +21,7 @@
 
 実エディタを常時無効にした制御API、User/Projectの紐づけ、診断と将来の導入手順は
 [第7段階の個人エディタ準備](docs/isolated-user-editors.md)を参照してください。
+
+専用Linuxホスト上のUser×Project別VM、独立HTTPS、容量試算と将来の構築・検証手順は
+[第8段階の実行基盤設計](docs/editor-foundation/architecture.md)を参照してください。
+今回は文書と静的検証のみで、VM作成・エディタ起動・公開は行いません。
