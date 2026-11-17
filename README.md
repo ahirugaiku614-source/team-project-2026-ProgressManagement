@@ -18,3 +18,6 @@
 
 承認済み変更の共有mainへの統合、初回main、途中失敗からの復旧とDB移行は
 [第6段階の共有Git統合API](docs/change-request-integration.md)を参照してください。
+
+実エディタを常時無効にした制御API、User/Projectの紐づけ、診断と将来の導入手順は
+[第7段階の個人エディタ準備](docs/isolated-user-editors.md)を参照してください。
