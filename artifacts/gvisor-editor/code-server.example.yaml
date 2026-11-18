@@ -1,0 +1,8 @@
+# 参考設定のみ。実行ENTRYPOINTは無効のまま。このファイルを共有認証へ使用しない。
+# 将来、本人ごとの別configを信頼済みbrokerが生成し/run/editor-configへread-onlyで渡す。
+bind-addr: 127.0.0.1:8080
+auth: password
+cert: false
+disable-telemetry: true
+disable-update-check: true
+# password/hashed-passwordはここに記入しない。実secret発行・browser接続は未実装。

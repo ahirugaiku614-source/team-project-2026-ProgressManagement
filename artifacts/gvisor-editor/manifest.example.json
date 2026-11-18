@@ -1,0 +1,10 @@
+{
+  "kind": "GVISOR_LAB_IMAGE_RECIPE",
+  "base_image": null,
+  "built_image_digest": null,
+  "architectures": ["amd64", "arm64"],
+  "image_build": "NOT_RUN",
+  "runtime_test": "NOT_RUN",
+  "browser_test": "NOT_RUN",
+  "launch_enabled": false
+}
