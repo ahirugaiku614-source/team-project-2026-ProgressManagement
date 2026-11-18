@@ -1,0 +1,5 @@
+# 許可したレシピだけをbuild contextへ含める。秘密や既存workspaceを渡さない。
+**
+!Dockerfile
+!disabled_entrypoint.py
+!code-server.example.yaml
