@@ -5,16 +5,22 @@
 既存DB/Docker/Git/workspace/volume/認証設定とVM管理・gatewayは変更していない。
 実行無効ゲートは維持し、実VM・公開・契約・課金は行わない。
 
+**追加条件：学校に余剰サーバーはない。** [隔離方式・無料クラウド・学生creditの追加比較](isolation-cloud-comparison.md)を参照。
+初版A/B/Cの数値は基準として残すが、高額購入を先にする優先順位は採用しない。
+購入を避けた短期credit検証と、必要条件を満たすKVM月額レンタルを優先して比較する。
+実見積り/実機合格前の「最安適合構成」は未確定。無料だけで4同時/40保存を満たす根拠は確認できなかった。
+
 | 文書/ファイル | 内容 |
 | --- | --- |
 | [構成・保存・学校登録・拡張設計](architecture.md) | A/B/C、32/64GiB、40/80環境、thin/base共有、全体4枠、10/20台、招待/mail比較 |
 | [費用比較](costs.md) | 公式価格の参考点と仮定予算を区別。電力・媒体・運用工数・初期資金を計上 |
+| [隔離方式とクラウド追加比較](isolation-cloud-comparison.md) | KVM、rootless/runsc、microVM、直接cloud VM。Oracle/Google/Azure、無料/学生枠、月額・規約・未確認条件 |
 | [安全性・性能試験計画](validation.md) | 全項目NOT_RUN。測定方法・合格/停止条件・隔離環境・RPO/RTO |
 | [計算用JSON](plan.example.json) | DESIGN_ONLY。実接続先・資格情報・起動設定は持たない |
 | `backend/tools/school_pilot_check.py` | 安全なJSON読取りと保護ハッシュ検査を再利用する静的試算 |
 | `backend/tests/test_school_pilot.py` | 一時JSON・モックによる計算/安全条件の検証 |
 
-推奨案は、Web/APIを別にした32GiB専用Linuxホストからの低コスト試験。
+初版の基準案は、Web/APIを別にした32GiB専用Linuxホストからの低コスト試験。
 初期全体4枠、40 User×Project保存なら主保存**実効2TiB**、外部backup各組**実効4TiB**を計画する。
 1TiBではdata800GiB以外の領域と空き予算が足りない。1人が2Projectを使う80環境なら再計画が必要。
 32GiBで性能試験を満たせなければ64GiB案を比較し、価格理由で隔離・backupを削らない。
@@ -35,6 +41,10 @@
 - 既存checker：design_consistent、runtime_source_unchanged=true。
   起動/配備/実基盤確認はfalse、実機23項目はNOT_RUNのまま。
 - 既存TestClient依存の非推奨警告あり。依存更新は対象外。
+
+隔離方式・クラウドの追加調査後にも、静的16件と容量checkerを再実行して成功した。
+費用の四則演算はDecimalで別途確認した。追記は文書のみで、計算JSON・既存コードは変更していない。
+全347件の回帰結果は初版時点であり、文書だけの追記後に全件を繰り返したものではない。
 
 容量計算の成立は実機性能/安全性の合格ではない。
 実行・配備・認証変更・性能検証の許可値はすべてfalse。実基盤の性能・安全性試験は未実施のまま。
