@@ -1,0 +1,31 @@
+{
+  "kind": "MANUAL_FUTURE_TEST_RECORD_ONLY",
+  "run_id": null,
+  "runtime_release": null,
+  "runtime_bundle_digest": null,
+  "image_digest": null,
+  "launch_enabled": false,
+  "deployment_allowed": false,
+  "checks": {
+    "runsc_version": "NOT_RUN",
+    "runtime_bundle_integrity": "NOT_RUN",
+    "runtime_no_fallback": "NOT_RUN",
+    "image_provenance": "NOT_RUN",
+    "systrap_execution": "NOT_RUN",
+    "rootless_process_chain": "NOT_RUN",
+    "cgroup_delegation": "NOT_RUN",
+    "cpu_enforcement": "NOT_RUN",
+    "memory_enforcement": "NOT_RUN",
+    "pids_enforcement": "NOT_RUN",
+    "disk_quota_enforcement": "NOT_RUN",
+    "user_project_file_isolation": "NOT_RUN",
+    "host_secret_isolation": "NOT_RUN",
+    "network_isolation": "NOT_RUN",
+    "metadata_block": "NOT_RUN",
+    "toolchain": "NOT_RUN",
+    "data_retention": "NOT_RUN",
+    "backup_restore": "NOT_RUN",
+    "crash_recovery": "NOT_RUN",
+    "browser_connection": "NOT_RUN"
+  }
+}
