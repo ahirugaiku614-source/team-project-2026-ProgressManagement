@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "mode": "DESIGN_ONLY",
+  "launch_enabled": false,
+  "authentication_changes": false,
+  "global_running_limit": 4,
+  "registered_users": 40,
+  "retained_pairs": 40,
+  "data_gib": 20,
+  "root_delta_gib": 16,
+  "shared_base_gib": 16,
+  "system_gib": 64,
+  "recovery_gib": 64,
+  "backup_generations": 2,
+  "backup_metadata_gib": 32,
+  "app_backup_gib": 128,
+  "free_reserve_percent": 20,
+  "primary_gib": 2048,
+  "external_backup_gib": 4096,
+  "hosts": [
+    {"id": "A", "count": 1, "cpu": 12, "memory_gib": 32},
+    {"id": "B", "count": 1, "cpu": 16, "memory_gib": 64},
+    {"id": "C", "count": 2, "cpu": 16, "memory_gib": 64}
+  ]
+}
