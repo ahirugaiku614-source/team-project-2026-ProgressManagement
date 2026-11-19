@@ -196,17 +196,29 @@ $env:EDITOR_LAB_IMAGE_ID = ''
 |対象・実施主体|環境と内容|記録できる結果・制限|
 |---|---|---|
 |以前の利用者による基礎検証|Ubuntu 24.04.5 LTS、rootful Docker＋runsc。2コンテナ同時起動・ファイル分離・基本セキュリティ設定|利用者から成功の報告あり。PR #18で再実行していない。rootlessや実行ワーカー全体の合格を意味しない|
-|PR #17のUbuntu試験（利用者実施）|今回、利用者から以前Ubuntuで実施した旨の申告あり|対象コミット・実行コマンド・ログ・PASS/FAIL/SKIP件数は本書に未収録。Linux専用3件や8process試験がすべてPASSしたとは推定しない。上の基礎検証と同一試験かも未確認|
+|PR #17のUbuntu試験（利用者実施）|VirtualBox上のUbuntu 24.04.5 LTS、Python 3.12.3。対象コミット：`8ce015b6de31e911b917bc7d03972f9c05294e76`。Dockerを使用しないモック・一時SQLiteによる検証|workerは73件実行、72 PASS、1 SKIP、0 FAIL、全体結果OK。SKIPはWindows byte lockの解放失敗試験のみで、Linux専用3件はSKIP対象ではない。API/clientの結果は下記に個別記録|
 |PR #17の開発側回帰試験|Windows、一時SQLite・合成Engine。コミット8ce015b時点|543件中379 PASS、0 FAIL、164 SKIP。worker単独は73件中70 PASS、3 SKIP。Linux実行結果として扱わない|
 |PR #18の開発側試験|Windows、権限分離の静的検査9件と既存worker/API/client|110件中107 PASS、0 FAIL、3 SKIP。Linux専用3件はSKIP。実Docker・rootless・mTLS等はNOT_RUN|
 
 PR間で既存テストは重複しており、件数を合算しない。Ubuntuでの過去の実施を
 PR #18の実機検証実績へ移したり、WindowsのSKIPをUbuntuでの失敗と解釈したりしない。
-Ubuntuログを今後記録する場合は、コミット・OS/Python版・実行コマンド・件数・
-Docker使用有無を添え、確認できた項目だけを更新する。
 
-今回のcode-server追記は設計資料1ファイルのみの変更。差分と書式を確認し、
-テストは再実行していない。上記件数はそれぞれ過去の実行記録である。
+利用者から提示されたPR #17のUbuntu試験結果は、確認範囲を分けて記録する。
+
+- ワーカーテスト：73件実行、72 PASS、1 SKIP、0 FAIL、全体結果OK。
+  Linux専用3件はSKIPされておらず、SQLiteの8プロセス予約・fcntl・異常終了時の
+  ロック解放と未完了予約保持を含むモック試験の結果である。
+- SKIP対象：Windows byte lockの解放失敗試験。Ubuntuでは対象外のためのSKIPである。
+- APIテスト：20件実行との報告あり。ただし提示された抜粋ではOK行を確認できて
+  いないため、20件すべてPASSしたとは記録しない。最終結果は未確認として扱う。
+- クライアントテスト：8件実行、OK。
+
+これらは利用者が以前実施した試験の報告であり、今回新たに実行した結果ではない。
+Dockerを使わない検証なので、実Docker・gVisor・rootless、実資源制限や実5秒停止の
+動作確認済みという意味ではない。以前のrootful Docker＋runsc基礎検証とも分けて扱う。
+
+今回の検証履歴修正は設計資料1ファイルのみの変更。差分と書式を確認し、
+テストは再実行していない。上記件数はそれぞれ過去の実行記録・利用者報告である。
 
 ## 公式資料（2026-11-19確認）
 
