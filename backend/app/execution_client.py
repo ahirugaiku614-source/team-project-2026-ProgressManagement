@@ -94,6 +94,9 @@ class ExecutionClient:
             if reply.execution_id != command.execution_id or reply.owner != command.owner:
                 raise WorkerUnavailable()
             return reply.result
+        except ExecutionBusy:
+            # 将来のworker共通予約で満枠だった場合も、APIの429へ対応付ける。
+            raise
         except Exception:
             # 学生コード・SDK例外・パス等を応答やログへ出さない。
             raise WorkerUnavailable() from None

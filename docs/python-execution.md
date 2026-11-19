@@ -1,5 +1,7 @@
 # 学生向けPython実行API：第1段階
 
+追記：別process向けworkerのDraft実装を[python-execution-worker.md](python-execution-worker.md)へ追加した。同一hostの専用SQLiteで共有4枠を管理するロジックはモック試験済みだが、API→workerの実通信と実Engine接続は未実装。以下の第1段階APIは引き続き既定503である。
+
 今回はFastAPIと未接続worker契約、モックテストだけを追加する。学生コードをAPI内のexec/eval/subprocessで実行せず、Docker/runsc・実worker・クラウドへ接続しない。既定では常に503となり、有効化する環境変数・Docker socket・Docker SDK・sudo設定は存在しない。
 
 ## API
@@ -60,7 +62,7 @@ policyはCPU 500 milliCPU、RAM 128MiB、network none、runtime runsc、実行�
 
 module共有ExecutionClientのBoundedSemaphore(4)で、**同一process・同一clientの同期呼出し**を4件まで受け付ける。4件をモックで待機させ、5件目がHTTP 429となることを検査する。呼出しが完了/例外終了するとAPI受付枠をfinallyで戻す。
 
-これは実コンテナ枠ではない。複数Uvicorn process、複数worker、複数client間の原子的予約管理は**未実装**。実workerへの要求が不明なまま途切れた際に、このAPI枠解放をコンテナ停止の証明にしてはいけない。永続操作ID・lease/fencing・UNKNOWNの枠保持・復旧照合が整うまで実接続しない。
+これは実コンテナ枠ではない。別Draftのworkerには同じ専用SQLiteを使う原子的予約管理を追加したが、APIの実接続はない。複数host/別DB間の予約は未実装。実workerへの要求が不明なまま途切れた際に、このAPI枠解放をコンテナ停止の証明にしてはいけない。実接続・権限・UNKNOWN復旧の実機検証が整うまで503を維持する。
 
 個人エディタのVM4台上限とは別の試験契約で、既存上限を変更していない。将来同じhostで併用するなら、合算資源予算・共通予約方針を決める必要がある。
 
@@ -77,7 +79,7 @@ python -B -W ignore::DeprecationWarning -m unittest discover -s tests -p 'test_e
 
 Dockerを使わない回帰では`test_compose_config`と`test_editor_container_lab`の2moduleを除外し、470件中309件PASS・161件skip・FAIL 0件。PROJECT_TEST_DATABASE_URLとEDITOR_LAB_IMAGE_IDは空にして実行した。skipは主にLinux専用Git/FS試験と未指定の隔離PostgreSQL試験。既存のStarlette TestClient非推奨警告は残る。実Docker CLI/Engine、実gVisor、実Firebase、既存DBは使用せず、依存の追加インストールも行っていない。
 
-既存main.pyにはrouter登録だけを追加し、schemas.pyへ独立型を追加した。既存DBモデル・DDL・Docker/依存設定・KVM/個人エディタ・Firebase実装は変更しない。commit/push/mergeは行わない。
+第1段階ではmain.pyへrouter登録、schemas.pyへ独立型を追加し、commit/push/mergeを行わなかった。その後の依頼で7ファイルのリポジトリ外backupとSHA256照合を行い、専用ブランチへ先に保存した。worker追加も別commitとDraft PRでレビューする。既存DBモデル・DDL・Docker/依存設定・KVM/個人エディタ・Firebase実装は変更しない。
 
 ## 次の段階で必要なこと
 
