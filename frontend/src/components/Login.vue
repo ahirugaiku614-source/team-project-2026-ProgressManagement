@@ -98,17 +98,16 @@ const handleSubmit = async () => {
       );
     }
 
-    // Firebase ID Tokenを取得
-    const idToken = await res.user.getIdToken();
-
-    console.log('=== Firebase ID Token ===');
-    console.log(idToken);
+    // 認証完了の確認は維持するが、返されたIDトークンは変数やログへ残さない。
+    // 実行機能へ渡す認証情報は、将来Vue側の要求時に取得する。拡張へは渡さない。
+    await res.user.getIdToken();
 
     // 認証成功後にホーム画面へ移動
    await router.replace('/');
   } catch (err) {
-    console.error(err);
-    errorMessage.value = getJapaneseErrorMessage(err.code);
+    // Firebaseの生エラーには認証情報が含まれ得るため、consoleへ出さない。
+    // 既知のcodeから選んだ固定の日本語メッセージだけを画面へ表示する。
+    errorMessage.value = getJapaneseErrorMessage(err?.code);
   } finally {
     isLoading.value = false;
   }
