@@ -10,6 +10,13 @@ from execution_worker.contracts import AttachAck, Frame, Observation, SendAck, S
 class EnginePort(Protocol):
     """将来の限定Docker接続境界。各操作は期限内に戻り、自動retry/pullしない契約。"""
 
+    # 現在はモック用Protocolのみで、実socketや期限強制の実装はない。
+    # attach/send/read/closeのtimeout_msだけでなく、prerequisites/create/start/
+    # inspect/kill/removeにも将来の実adapterで接続・読書き・全体の有限期限が必要。
+    # 同期操作がハングするとServiceの単調時計監視も進まない。独立watchdogと
+    # 所有確認付き停止の実証までは「実行開始から5秒以内の停止」を保証しない。
+    # createの応答消失は副作用不明：同名再作成やラベル検索による削除は禁止。
+
     def prerequisites(self, image: str) -> dict:
         """Linux/rootful/runsc/cgroup/image検証結果を返す。設定名だけで証明しない。"""
         ...

@@ -2,6 +2,8 @@
 
 PR #17のレビュー追補は[安全性レビュー対応](python-execution-worker-review.md)を参照する。例外時の停止試行、起動時照合、容量受付制限、完了結果の明示保守、I/O期限/部分失敗契約を追加した。実接続と独立watchdogは無効/未実装のままである。
 
+作成結果不明・遅延EOF・OS lock解放についての最新確認と、Dockerを使わないUbuntu検証手順は[追加安全性レビュー](python-execution-worker-additional-review.md)を参照する。
+
 ## 今回の到達点
 
 FastAPIとは別processへ配備するための`backend/execution_worker/`を追加した。予約・署名検証・固定コンテナ設定・出力監視・停止/削除確認・復旧処理は実装し、**合成Engineで試験した**。実Docker SDK/CLI/socketアダプター、API→workerの実通信、TLS/mTLS peer検証、秘密の配備、確認済みPython imageは未実装/未準備である。

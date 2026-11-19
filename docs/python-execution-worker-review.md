@@ -1,5 +1,7 @@
 # PR #17：レビュー修正と保証の境界
 
+最新の追加確認は[作成結果不明・期限・OS排他のレビュー](python-execution-worker-additional-review.md)に記載する。以下の530件という集計は前回修正時の記録で、今回の結果は追記欄を参照する。
+
 ## 1. 実行中の例外でも、確認済み本人の停止を試みる
 
 従来はstart/send/readの例外をUNKNOWNへ保存するだけで、稼働中resourceに停止を試みない場合があった。今回、各実行の一時的な_Attemptに「完全IDが保存済みか」「最初の所有確認済みか」「I/O開始/閉鎖/停止を試行したか」を記録する。並行要求間でこの状態を共有しない。
@@ -65,3 +67,13 @@ Windowsの開発用Python、合成Engine、一時SQLiteだけを使う。実Dock
 PROJECT_TEST_DATABASE_URLとEDITOR_LAB_IMAGE_IDは空にして実行。skipは主にLinux専用Git/FSと隔離PostgreSQL未指定。既存Starlette TestClientの非推奨警告は残る。実Docker統合試験と依存インストールは実施していない。
 
 sudoers、Docker daemon/context/rootless、socket権限、既存Docker resource、Compose/volume、既存PostgreSQL/Git/workspaceは変更していない。依存インストールも行わない。rootlessは未検証のままとし、PR #17はDraftを維持してmainへマージしない。
+
+### 追加レビュー後の最新結果（2026-11-19）
+
+- worker：73件中70件PASS、3件SKIP、FAIL 0件。
+- 既存回帰を含む全体：**543件中379件PASS、164件SKIP、FAIL 0件**（68.568秒）。
+- 追加13件はWindowsで10件PASS、Linux専用3件SKIP。既存API/clientの28件もPASS。
+- Dockerを呼ぶtest_compose_configとtest_editor_container_labは収集対象外。この2モジュールは上記SKIP件数に含まない。
+- PROJECT_TEST_DATABASE_URLとEDITOR_LAB_IMAGE_IDを空にし、実DB・実Docker・実Firebaseへ接続していない。パッケージの追加なし。
+- Windowsでは8processのSQLite予約競合、子process異常終了、msvcrt解放故障を確認。Linux fcntl専用3件と実EngineのI/O期限・5秒停止はNOT_RUN。
+- Ubuntu用非Docker手順と合格条件は[追加レビュー資料](python-execution-worker-additional-review.md)を参照。Linuxで実行済みとは扱わない。

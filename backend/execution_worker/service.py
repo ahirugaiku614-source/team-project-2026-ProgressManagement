@@ -220,7 +220,15 @@ class Service:
                     raise StreamDisconnected()  # 終了済みでも出力末尾を確認できない。成功/実行timeoutと混同しない。
                 reason = "timeout"
                 break
-            self.driver.owned(cid, spec)
+            last_observed = self.driver.owned(cid, spec)
+            # inspect自身が遅れた場合、古いremainingで読み取りを開始しない。
+            # 同期呼出しを中断する監視ではないため、制御が戻った時点で再検査する。
+            remaining = timeout_ms - (self.monotonic_ms() - started)
+            if remaining <= 0:
+                if last_observed is not None and not last_observed.running and not eof:
+                    raise StreamDisconnected()
+                reason = "timeout"
+                break
             frame = None if eof else self.driver.read(cid, min(50, remaining), 4096)
             if frame is not None:
                 if frame.stream == "eof" and frame.data == b"":
@@ -236,6 +244,13 @@ class Service:
                     raise Unavailable()
             observed = self.driver.owned(cid, spec)
             last_observed = observed
+            # read/inspectの遅延後に届いたEOF＋exit=0を正常終了へ変換しない。
+            # 実終了時刻を信頼できる証跡がないため、期限超過を優先して扱う。
+            if self.monotonic_ms() - started >= timeout_ms:
+                if not observed.running and not eof:
+                    raise StreamDisconnected()  # 終了済み＋EOF欠落は従来どおり基盤障害。
+                reason = "timeout"
+                break
             if eof and not observed.running:
                 if observed.exit_code is None:
                     raise Unavailable()

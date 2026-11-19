@@ -156,13 +156,17 @@ class Registry:
             raise Unavailable() from None
         finally:
             if fd is not None:
-                if acquired:
-                    if os.name == "nt":
-                        os.lseek(fd, 0, os.SEEK_SET)
-                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                    else:
-                        fcntl.flock(fd, fcntl.LOCK_UN)
-                os.close(fd)
+                # 明示unlockが失敗してもdescriptorを残さない。closeによるOSの解放を
+                # 必ず試みるが、例外を握り潰して処理成功や予約解放とは判断しない。
+                try:
+                    if acquired:
+                        if os.name == "nt":
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        else:
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
 
     def admit(self, command, nonce, now, spec):
         """署名nonceの一回消費・同一要求照合・全体4枠の予約を原子的に行う。"""
