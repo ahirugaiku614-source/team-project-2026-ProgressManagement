@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from typing import Literal, Optional
 from datetime import datetime
 from uuid import UUID
@@ -255,3 +255,69 @@ class CodeFileResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# 短時間のPython実行専用の上限。既存の個人エディタ用Profileは変更しない。
+EXECUTION_CODE_MAX_BYTES = 64 * 1024
+EXECUTION_OUTPUT_MAX_BYTES = 64 * 1024
+
+
+def validate_execution_code(value: str) -> str:
+    """実行せずにUTF-8 byte数・空白だけ・NULを検査し、インデントを保持して返す。"""
+    if not value.strip() or "\x00" in value:
+        raise ValueError("Invalid Python source")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeError:
+        raise ValueError("Invalid Python source") from None
+    if size > EXECUTION_CODE_MAX_BYTES:
+        raise ValueError("Python source is too large")
+    return value
+
+
+class ExecutionCreate(BaseModel):
+    """POST /executeの本文。本人IDやimage/mount/コマンド等の追加指定を拒否する。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    team_id: int = Field(gt=0, le=2**31 - 1)
+    project_id: int = Field(gt=0, le=2**31 - 1)
+    language: Literal["python"] = "python"
+    code: str = Field(min_length=1, max_length=EXECUTION_CODE_MAX_BYTES, repr=False)
+
+    @field_validator("code")
+    @classmethod
+    def check_source(cls, value):
+        """構文の正しさは判定しない。SyntaxErrorも将来のworker実行結果として扱う。"""
+        return validate_execution_code(value)
+
+
+class ExecutionResponse(BaseModel):
+    """workerから確認できた実行結果。API側が終了コードや実行時間を推測しない。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    status: Literal["completed", "error", "timeout"]
+    stdout: str = Field(max_length=EXECUTION_OUTPUT_MAX_BYTES, repr=False)
+    stderr: str = Field(max_length=EXECUTION_OUTPUT_MAX_BYTES, repr=False)
+    exit_code: int | None = Field(ge=-(2**31), le=2**31 - 1)
+    execution_time_ms: int = Field(ge=0, le=2**31 - 1)
+
+    @field_validator("stdout", "stderr")
+    @classmethod
+    def check_output(cls, value):
+        """モック結果もUTF-8 byte上限を検査する。実workerのストリーム制限は未実装。"""
+        try:
+            size = len(value.encode("utf-8"))
+        except UnicodeError:
+            raise ValueError("Invalid execution output") from None
+        if size > EXECUTION_OUTPUT_MAX_BYTES:
+            raise ValueError("Execution output is too large")
+        return value
+
+    @model_validator(mode="after")
+    def check_exit_status(self):
+        """成功・異常・期限切れの矛盾を拒否する。期限切れはexit_code未確定とする。"""
+        if ((self.status == "completed" and self.exit_code != 0)
+                or (self.status == "error" and self.exit_code == 0)
+                or (self.status == "timeout" and self.exit_code is not None)):
+            raise ValueError("Inconsistent execution result")
+        return self
