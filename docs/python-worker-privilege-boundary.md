@@ -51,6 +51,37 @@ Docker認可pluginはJSON以外のbodyを判断材料にできず、HTTP Upgrade
 将来設計であり、このPRではsocket接続コードもパス設定も追加しない。
 rootful案の特権接続部も、APIプロセスと別の専用hostに閉じ込める必要がある。
 
+### code-serverの役割とPython実行経路
+
+学生用エディターにはcode-serverを使用し、本人のUser×Projectに対応するコードの
+**編集・保存**を担当させる。code-serverをDocker操作の入口やPython実行ワーカーに
+しない。Docker socketのmount、Dockerグループ等の操作権限、root権限やsudo経由の
+Docker操作権限を与えない。
+
+本設計のPython実行機能は、code-serverで編集したコードであっても、必ずFastAPIの
+Firebase認証と現在のTeam/Project所属確認を経由する。学生IDは認証結果から確定し、
+code-serverやクライアントの自己申告を信用しない。認可後にコード本文を既存の
+RUN_PYTHON要求として渡す境界を維持する。
+
+```text
+code-server：本人のコードを編集・保存
+    ↓ コードを実行APIへ渡す方式は未確定・未実装
+FastAPI：Firebase認証 → 現在のTeam/Project認可 → RUN_PYTHON
+    ↓ 将来の認証済み限定通信（現在は未接続503）
+実行ワーカー：受け取ったコード本文を隔離実行環境へstdinで渡す
+```
+
+実行ワーカーも実行コンテナも、code-serverの作業領域を直接mountしない。
+保存先の共有volumeやhost pathを渡してコードを読み取らせる方式は採用しない。
+他ユーザーや他Projectのファイルへのアクセス権を実行経路へ広げない。
+
+**code-serverから実行APIへコードを渡す具体的な方式は未確定事項**である。
+エディター拡張やブラウザ側UIなど、どこから要求するか、未保存バッファと保存済み
+ファイルのどちらを対象にするか、認証情報の受け渡し、Origin/CSRF対策を今後設計する。
+認証情報を作業ファイルやログへ保存しないことも接続方式の要件とする。
+今回、拡張・ボタン・HTTP通信・code-server設定は実装せず、エディターと実行機能の
+既存無効ゲートを維持する。図は将来の責任分担であり、接続確認済みの構成ではない。
+
 学生コードは固定imageのPythonへstdinで渡し、ホスト上のexec/subprocessで評価しない。
 学生コンテナにはhost workspace、Docker socket、秘密、管理台帳をmountしない。
 0.5CPU、128MiB、追加swapなし、pids32、read-only、tmpfs/shm上限、cap全削除、
@@ -97,7 +128,9 @@ socket経路を閉じ、台帳による所有確認を行う必要がある。�
 同じ専用SQLiteを共有するprocessだけで全体4枠を予約する既存仕様を維持する。
 UNKNOWNや未完了は枠を保持。create応答消失で完全ID不明なら再作成・推測削除をせず
 管理者照合が必要。別daemon/別台帳への変更で受付を復活させない。
-Linux fcntlと8processの実検証は、Ubuntu環境未準備のためNOT_RUNのままである。
+PR #18の作業環境ではUbuntuを利用しておらず、Linux fcntlと8processのLinux実検証は
+NOT_RUNである。利用者が別途Ubuntuで実施したPR #17の試験とは区別する。
+実施主体・環境・確認できる結果の範囲は、末尾の検証履歴を参照する。
 
 5秒はstart直前からの単調時計上の実行期限で、全Docker操作のハングを中断する保証では
 ない。制御/stream I/Oの実期限、独立watchdog、worker死亡後の所有確認付き停止は未実装。
@@ -157,6 +190,23 @@ $env:EDITOR_LAB_IMAGE_ID = ''
 
 既存追跡ファイルは変更せず、静的検査・テスト・本書の新規3ファイルだけを追加した。
 テスト成功は権限分離の実機合格や公開実行の許可を意味しない。
+
+### PR #17とPR #18の検証履歴を区別する
+
+|対象・実施主体|環境と内容|記録できる結果・制限|
+|---|---|---|
+|以前の利用者による基礎検証|Ubuntu 24.04.5 LTS、rootful Docker＋runsc。2コンテナ同時起動・ファイル分離・基本セキュリティ設定|利用者から成功の報告あり。PR #18で再実行していない。rootlessや実行ワーカー全体の合格を意味しない|
+|PR #17のUbuntu試験（利用者実施）|今回、利用者から以前Ubuntuで実施した旨の申告あり|対象コミット・実行コマンド・ログ・PASS/FAIL/SKIP件数は本書に未収録。Linux専用3件や8process試験がすべてPASSしたとは推定しない。上の基礎検証と同一試験かも未確認|
+|PR #17の開発側回帰試験|Windows、一時SQLite・合成Engine。コミット8ce015b時点|543件中379 PASS、0 FAIL、164 SKIP。worker単独は73件中70 PASS、3 SKIP。Linux実行結果として扱わない|
+|PR #18の開発側試験|Windows、権限分離の静的検査9件と既存worker/API/client|110件中107 PASS、0 FAIL、3 SKIP。Linux専用3件はSKIP。実Docker・rootless・mTLS等はNOT_RUN|
+
+PR間で既存テストは重複しており、件数を合算しない。Ubuntuでの過去の実施を
+PR #18の実機検証実績へ移したり、WindowsのSKIPをUbuntuでの失敗と解釈したりしない。
+Ubuntuログを今後記録する場合は、コミット・OS/Python版・実行コマンド・件数・
+Docker使用有無を添え、確認できた項目だけを更新する。
+
+今回のcode-server追記は設計資料1ファイルのみの変更。差分と書式を確認し、
+テストは再実行していない。上記件数はそれぞれ過去の実行記録である。
 
 ## 公式資料（2026-11-19確認）
 
