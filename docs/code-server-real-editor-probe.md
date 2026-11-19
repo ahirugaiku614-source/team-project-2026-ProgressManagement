@@ -178,6 +178,60 @@ Linux専用worker3件。既定503と認証・所属確認を含む既存回帰�
 iframe、実Linuxでのsymlink/所有者検査、実Docker/gVisor/rootless、学生コード実行は全て
 NOT_RUN。匿名HEAD一回の調査を、これらの成功と読み替えない。
 
+## 追加確認：Ubuntu端末と既存SSH設定（2026-11-20）
+
+以下は追加調査の記録であり、前項のモック試験を再実行した結果ではない。
+実機拡張の9項目は引き続きNOT_RUN。VMへの拡張導入・起動・ディレクトリ作成はしていない。
+
+|確認項目|区分・実施主体|確認結果|
+|---|---|---|
+|Ubuntu OS/CPU/実UID|PASS：利用者がUbuntu端末で読取り|Ubuntu 24.04.5 LTS、x86_64、非root UID 1000|
+|Ubuntu側Git|PASS：利用者が読取り|feature/python-execution-worker、未コミット表示なし。git logで確定したHEADは8ce015b6de31e911b917bc7d03972f9c05294e76。PR #21のlabsファイルはこの作業ツリーに未取得|
+|ホスト上のcode-server候補|調査済み：利用者が読取り|PATH、代表的な配置先、code-server/node/nodejs名の稼働プロセスからは未発見。別配置・Docker内の有無は断定しない|
+|VirtualBox状態|PASS：Codexがhost metadataを読取り|Ubuntu分類の稼働VM候補を確認。NATの127.0.0.1:2222→guest:22。起動・設定変更・guest内操作なし|
+|既存SSH設定|PASS：Codexが読取り|既存~/.ssh/configの127.0.0.1設定からユーザーと2222番を解決。対象設定と対応するVS Codeのpath/configFile上書きは確認されなかった|
+|SSH非対話接続|FAIL：実接続試行|既存ホスト鍵の検証を維持してSSHサーバーへ到達したが、公開鍵認証を受理されずexit 255。パスワード入力は行っていない|
+|既存認証の準備状況|調査済み：Codexのmetadata確認と利用者の説明|エージェントは起動中だが登録鍵0件。候補鍵ファイルは1件存在したが今回の公開鍵提示は受理されなかった。利用者の通常のRemote - SSH接続はパスワード入力方式|
+|CodexによるUbuntu内部の追加調査|NOT_RUN|非対話認証未成立。SSHサーバーの故障や、利用者のパスワード接続も不可能という意味ではない|
+|拡張ロード/コマンド表示/9言語取得/改行/自動保存防止/64KiB/領域外拒否/ログ|NOT_RUN|モック成功で代用しない。実code-server/VS Code/拡張host Nodeの版も未確認|
+|認証後Origin/CSP/frame-ancestors/X-Frame-Options/iframe/Webview|NOT_RUN|ログイン後の実エディターへ到達していない。匿名HEADの結果を流用しない|
+
+今回のSSH試行はBatchMode=yes、StrictHostKeyChecking=yes、UpdateHostKeys=noを使用し、
+port forwardingと既存ControlMaster利用を無効にした一時的な呼出しである。
+SSH設定、known_hosts、秘密鍵、authorized_keys、エージェントの登録内容は変更していない。
+診断の本文は保存せず、認証成否の真偽値だけを確認した。パスワード、鍵本文、鍵のpath/指紋、
+個人情報、認証Cookieを本書へ記録しない。
+
+Codexから既存のVS Code Remote - SSHの対話セッションや入力済みパスワードを借用する
+仕組みはない。パスワードをチャット、コマンド引数、環境変数、ログへ渡す代替は採用しない。
+ホスト鍵検証を無効化したり、鍵追加・サービス起動・認証設定変更を勝手に行ったりもしない。
+新しい認証手段の準備が必要なら、具体的な変更と影響範囲を示して別途承認を得る。
+
+現在の障害は「Codexの非対話認証手段が成立していない」ことであり、VMが独立検証に
+使えることやcode-serverの実機試験準備完了を確認できた、とは報告しない。
+利用者からVMの利用承認は得ているが、環境を変更する操作の承認とは区別する。
+
+### 追加変更なしで行える手動の読取り確認
+
+必要であれば、利用者が既存Remote - SSHでログイン済みのUbuntu端末へ以下をまとめて
+貼り付けられる。これは手動代替手順であり、CodexがSSH経由で実行済みという意味ではない。
+インストール、起動、ファイル作成、Docker操作は含まない。
+
+```bash
+cat /etc/os-release
+uname -m
+id -u
+if command -v code-server >/dev/null 2>&1; then
+  printf 'code-server: PATH上に候補あり（版と動作は未確認）\n'
+else
+  printf 'code-server: PATH上では未発見\n'
+fi
+```
+
+期待結果はOS/CPU/非rootの確認と候補有無だけ。候補がなければ版・拡張host検証はNOT_RUNで
+停止し、apt/npm/Docker等による導入へ進まない。既存共有サービスを見つけても停止・再起動・
+拡張導入はしない。次は認証と専用環境の準備について承認範囲を確定する必要がある。
+
 ## 公式資料（2026-11-20確認）
 
 - [VS Code manifest](https://code.visualstudio.com/api/references/extension-manifest)
