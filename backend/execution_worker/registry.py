@@ -1,13 +1,25 @@
 """worker専用SQLiteで全体4枠と操作履歴を永続化する。既存PostgreSQLは使わない。"""
 
 from contextlib import contextmanager
+import errno
 import os
 from pathlib import Path
 import sqlite3
 import stat
+import shutil
+import time
 from uuid import UUID
 
-from execution_worker.contracts import Busy, Denied, Unavailable, canonical, fingerprint, full_id
+from execution_worker.contracts import Busy, Denied, LockBusy, Unavailable, canonical, fingerprint, full_id
+
+
+# 無制限に証跡を削る代わりに、新規受付を止める保守的な上限。
+# HTTP入力や環境変数で変更させない。同一台帳の全workerを同じ版で運用する。
+MAX_JOBS = 10000
+MAX_NONCES = 100000
+MAX_LOCK_FILES = 10000
+MAX_STATE_BYTES = 512 * 1024**2
+MIN_FREE_BYTES = 64 * 1024**2
 
 
 class Registry:
@@ -93,10 +105,24 @@ class Registry:
         """同一実行の処理と復旧をOS lockで排他する。期限だけで別管理者へ奪取しない。"""
         if type(execution_id) is not UUID:
             raise Unavailable()
+        self.get(execution_id)  # 未登録IDの復旧要求でlockファイルを増やさない。
+        path = self.path.with_name(self.path.name + "." + str(execution_id) + ".lock")
+        with self._file_lock(path):
+            yield
+
+    @contextmanager
+    def admission_lock(self):
+        """未完了検査→予約→実行lock取得を直列化し、予約直後を孤立と誤認させない。"""
+        path = self.path.with_name(self.path.name + ".admission.lock")
+        with self._file_lock(path, wait_ms=1000):
+            yield
+
+    @contextmanager
+    def _file_lock(self, lock_path, wait_ms=0):
+        """新規専用lockのみ扱う。競合はLockBusyに区別し、inodeをunlinkで交換しない。"""
         fd = None
         acquired = False
         try:
-            lock_path = self.path.with_name(self.path.name + "." + str(execution_id) + ".lock")
             fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
@@ -106,14 +132,25 @@ class Registry:
                 # Windowsのbyte lock用。新規専用lockファイルだけに1 byteを置く。
                 if info.st_size == 0:
                     os.write(fd, b"0")
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
+            deadline = time.monotonic() + wait_ms / 1000
+            while not acquired:
+                try:
+                    if os.name == "nt":
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    else:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except OSError as error:
+                    if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise LockBusy() from None
+                    time.sleep(0.005)  # admissionの短い競合だけを待つ。実行lockは即時拒否。
             yield
-        except (Busy, Denied):
+        except (Busy, Denied, LockBusy):
             raise
         except Exception:
             raise Unavailable() from None
@@ -139,13 +176,89 @@ class Registry:
             if previous:
                 if previous["owner"] != owner or previous["request_hash"] != request_hash:
                     raise Denied()
+                self._check_capacity(db, new_job=False)
                 return dict(previous), False
+            self._check_capacity(db, new_job=True)
             if (db.execute("SELECT 1 FROM jobs WHERE state='UNKNOWN'").fetchone()
                     or db.execute("SELECT count(*) FROM jobs WHERE state!='COMPLETED'").fetchone()[0] >= 4):
                 raise Busy()
             db.execute("INSERT INTO jobs VALUES(?,?,?,?, 'RESERVED',NULL,1,NULL,?)",
                        (key, owner, request_hash, canonical(spec), now))
             return dict(db.execute("SELECT * FROM jobs WHERE execution_id=?", (key,)).fetchone()), True
+
+    def unfinished(self):
+        """再起動時に調べる非完了IDを返す。UNKNOWNも含め、証跡は削除しない。"""
+        with self.connection() as db:
+            return [dict(row) for row in db.execute("SELECT * FROM jobs WHERE state!='COMPLETED' ORDER BY execution_id")]
+
+    def _usage(self, db):
+        """件数・DB/sidecar bytes・実行lock数を観測する。ファイル名や内容は報告しない。"""
+        usage = {"jobs": db.execute("SELECT count(*) FROM jobs").fetchone()[0],
+                 "nonces": db.execute("SELECT count(*) FROM nonces").fetchone()[0],
+                 "locks": 0, "orphan_locks": 0, "state_bytes": 0,
+                 "free_bytes": shutil.disk_usage(self.path.parent).free}
+        for suffix in ("", "-journal", "-wal", "-shm", ".admission.lock"):
+            try:
+                info = Path(str(self.path) + suffix).lstat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise Unavailable()
+            usage["state_bytes"] += info.st_size
+        prefix = self.path.name + "."
+        with os.scandir(self.path.parent) as entries:
+            for entry in entries:
+                if not entry.name.startswith(prefix) or not entry.name.endswith(".lock") or entry.name == self.path.name + ".admission.lock":
+                    continue
+                key = entry.name[len(prefix):-5]
+                if str(UUID(key)) != key:
+                    raise Unavailable()
+                # WindowsのDirEntry.statではnlinkが0のことがあるため、lstatを直接使う。
+                info = Path(entry.path).lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise Unavailable()
+                usage["locks"] += 1
+                usage["state_bytes"] += info.st_size
+                if not db.execute("SELECT 1 FROM jobs WHERE execution_id=?", (key,)).fetchone():
+                    usage["orphan_locks"] += 1
+                if usage["locks"] > MAX_LOCK_FILES:
+                    break  # 過大なdirectoryを無限走査して受付を占有しない。
+        return usage
+
+    def _check_capacity(self, db, new_job):
+        """nonce/新規row書込み前に上限を検査する。超過時はtransactionごとrollbackする。"""
+        usage = self._usage(db)
+        # admitはこのtransactionですでにnonceを1件挿入している。超過ならrollbackされる。
+        if (usage["nonces"] > MAX_NONCES or usage["jobs"] + int(new_job) > MAX_JOBS
+                or usage["locks"] + int(new_job) > MAX_LOCK_FILES or usage["orphan_locks"]
+                or usage["state_bytes"] >= MAX_STATE_BYTES or usage["free_bytes"] < MIN_FREE_BYTES):
+            raise Busy()
+
+    def capacity_report(self):
+        """管理者向け容量観測だけを行う。UNKNOWNやnonce/lockを間引かない。"""
+        with self.connection() as db:
+            return self._usage(db)
+
+    def redact_completed(self, before_created_ms, maximum=100):
+        """明示保守で古い完了結果だけを秘匿する。ID/hash/nonce/未完了証跡/lockは保持する。
+
+        tombstoneが残るため同じ実行IDを再実行しない。SQLite物理ファイルは自動縮小しない。
+        稼働中のlockを消す方式は別processの排他を分断するので採用しない。
+        """
+        if type(before_created_ms) is not int or before_created_ms < 0 or type(maximum) is not int or not 1 <= maximum <= 1000:
+            raise Unavailable()
+        changed = 0
+        with self.admission_lock(), self.transaction() as db:
+            rows = db.execute("SELECT execution_id FROM jobs WHERE state='COMPLETED' AND result IS NOT NULL AND created_ms<=? ORDER BY created_ms LIMIT ?",
+                              (before_created_ms, maximum)).fetchall()
+            for row in rows:
+                try:
+                    with self.job_lock(UUID(row["execution_id"])):
+                        changed += db.execute("UPDATE jobs SET result=NULL,revision=revision+1 WHERE execution_id=? AND state='COMPLETED' AND result IS NOT NULL",
+                                              (row["execution_id"],)).rowcount
+                except LockBusy:
+                    continue
+        return changed
 
     def bind(self, profile):
         """台帳を単一daemon・image・固定policyへ結び付け、別hostへの誤接続を拒否する。"""

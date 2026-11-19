@@ -4,7 +4,7 @@ from copy import deepcopy
 import re
 from typing import Protocol
 
-from execution_worker.contracts import Observation, Unavailable, canonical, fingerprint, full_id, image_id
+from execution_worker.contracts import AttachAck, Frame, Observation, SendAck, StreamDisconnected, Unavailable, canonical, fingerprint, full_id, image_id
 
 
 class EnginePort(Protocol):
@@ -22,20 +22,31 @@ class EnginePort(Protocol):
         """完全IDを照合して返す。Noneは確定した404だけで、通信障害と混同しない。"""
         ...
 
-    def attach(self, container_id: str):
-        """start前に非TTY入出力を接続する。管理socketをguestへ渡さない。"""
+    def attach(self, container_id: str, timeout_ms: int) -> AttachAck:
+        """期限内に非TTYの3方向を接続する。部分接続/期限切れは例外とし、自動retryしない。"""
         ...
 
     def start(self, container_id: str):
         """確認済み本人コンテナを開始する。hostで学生コードを評価しない。"""
         ...
 
-    def send(self, container_id: str, source: bytes):
-        """stdinへsourceを送って入力側を閉じる。shell文字列へ埋め込まない。"""
+    def send(self, container_id: str, source: bytes, timeout_ms: int) -> SendAck:
+        """期限内に全量を送ってstdinだけ半closeする。部分送信後の再送は禁止。"""
         ...
 
     def read(self, container_id: str, timeout_ms: int, maximum: int):
-        """期限とraw byte上限付きのFrame、または未到着を示すNoneを返す。"""
+        """期限内に最大maximum bytesを返す。Noneは未到着、eofは両出力drain完了のみ。
+
+        接続断/不完全なDocker多重化frameはStreamDisconnected。TCP切断をeofへ変換しない。
+        decoderにも上限を設け、巨大なframe lengthから無制限bufferを確保してはいけない。
+        """
+        ...
+
+    def close(self, container_id: str, timeout_ms: int) -> bool:
+        """ローカルの全stream/decoderを期限内に閉じる。半closeと区別し、冪等にTrueを返す。
+
+        containerを停止する操作ではない。再起動後に接続がなくてもTrue、閉鎖不明は例外。
+        """
         ...
 
     def kill(self, container_id: str):
@@ -116,6 +127,43 @@ class Driver:
                 or (observed.exit_code is not None and (type(observed.exit_code) is not int or not -(2**31) <= observed.exit_code < 2**31))):
             raise Unavailable()
         return observed
+
+    def attach(self, cid, spec, timeout_ms):
+        """所有確認後のattach完了を検査する。自己申告の部分成功を許可しない。"""
+        if type(timeout_ms) is not int or not 1 <= timeout_ms <= 1000:
+            raise Unavailable()
+        self.owned(cid, spec)
+        ack = self.port.attach(cid, timeout_ms)
+        if not isinstance(ack, AttachAck) or any(value is not True for value in (ack.stdin, ack.stdout, ack.stderr)):
+            raise StreamDisconnected()
+
+    def send(self, cid, spec, source, timeout_ms):
+        """部分送信/EOF未確認は例外にする。sourceを追加送信して修復することはしない。"""
+        if type(timeout_ms) is not int or not 1 <= timeout_ms <= 1000:
+            raise Unavailable()
+        self.owned(cid, spec)
+        ack = self.port.send(cid, source, timeout_ms)
+        if (not isinstance(ack, SendAck) or type(ack.bytes_sent) is not int
+                or ack.bytes_sent != len(source) or ack.stdin_closed is not True):
+            raise StreamDisconnected()
+
+    def read(self, cid, timeout_ms, maximum=4096):
+        """raw byte上限/stream種別/EOFを検査し、不正な断片を成功出力へ混ぜない。"""
+        if type(timeout_ms) is not int or not 1 <= timeout_ms <= 50 or type(maximum) is not int or maximum != 4096:
+            raise Unavailable()
+        frame = self.port.read(cid, timeout_ms, maximum)
+        if frame is None:
+            return None
+        if (not isinstance(frame, Frame) or type(frame.data) is not bytes or len(frame.data) > maximum
+                or frame.stream not in ("stdout", "stderr", "eof") or (frame.stream == "eof" and frame.data)):
+            raise StreamDisconnected()
+        return frame
+
+    def close_io(self, cid, timeout_ms=1000):
+        """既知完全IDのlocal接続を閉じる。削除済みでも接続なしを成功として扱える契約。"""
+        if (not full_id(cid) or type(timeout_ms) is not int or not 1 <= timeout_ms <= 1000
+                or self.port.close(cid, timeout_ms) is not True):
+            raise StreamDisconnected()
 
     def stop(self, cid, spec):
         """所有者確認後だけkillし、停止を確認する。失敗/不明は削除へ進まない。"""

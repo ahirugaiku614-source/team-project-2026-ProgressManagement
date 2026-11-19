@@ -1,5 +1,7 @@
 # Python実行worker：Draft実装・保証範囲
 
+PR #17のレビュー追補は[安全性レビュー対応](python-execution-worker-review.md)を参照する。例外時の停止試行、起動時照合、容量受付制限、完了結果の明示保守、I/O期限/部分失敗契約を追加した。実接続と独立watchdogは無効/未実装のままである。
+
 ## 今回の到達点
 
 FastAPIとは別processへ配備するための`backend/execution_worker/`を追加した。予約・署名検証・固定コンテナ設定・出力監視・停止/削除確認・復旧処理は実装し、**合成Engineで試験した**。実Docker SDK/CLI/socketアダプター、API→workerの実通信、TLS/mTLS peer検証、秘密の配備、確認済みPython imageは未実装/未準備である。
@@ -69,7 +71,7 @@ start前にattachし、start要求直前から単調時計で5秒を計測する
 
 期限到達/出力超過は所有確認後に対象全体を停止し、停止確認後だけ削除する。正常・Python例外は確認できたexit code、timeoutは既存契約どおりnull。出力超過はstatus=error、exit_code=null、上限内の部分出力と固定理由を返す。ポリシー違反時の終了コードは公開せず、成功0へ偽装しない。公開statusの3種類を増やさない。
 
-実RPCには短いI/O期限と非blocking readが必要で、EnginePort実装の契約となる。今回それを実装・実測していない。daemon停止、RPCハング、worker死亡、host障害時に5秒以内の停止/削除を保証するものではない。特にstream障害時はUNKNOWNへ保留し、明示復旧まで実resourceが残る可能性がある。独立監視・supervision・実I/O期限を確立するまでは公開実行禁止。
+attach/send/closeには最大1000ms、readには最大50msの明示I/O期限と完了ackを追加した。返答が遅かった場合の拒否は行うが、実アダプター自体の期限強制・キャンセル・独立watchdogは未実装。daemon停止、RPCハング、worker死亡、host障害時に5秒以内の停止/削除を保証しない。stream等の例外時も最新の完全ID/所有情報を再確認して停止・閉鎖・削除を試み、未確認ならUNKNOWNを保持する。公開実行は引き続き禁止。
 
 ## 所有確認・障害復旧
 
@@ -79,7 +81,7 @@ start前にattachし、start要求直前から単調時計で5秒を計測する
 |---|---|
 |create前の前提不足/DB失敗|実resourceなし。予約前なら何もしない。RESERVEDなら完了失敗として解放可能|
 |create返答消失・完全ID未保存|UNKNOWN、枠保持。名前やlabelで推測削除せず管理者確認|
-|start/stream失敗|既知IDを保持してUNKNOWN。管理者のrecoverで所有確認から再開|
+|start/stream失敗|排他中に確認済み本人IDへの停止を一度試行。停止/閉鎖/削除/404/DB確定が揃えば失敗として完了、元の要求は503。未確認ならUNKNOWN|
 |kill失敗/停止未確認|UNKNOWN。removeへ進まない|
 |remove失敗/確定404未確認|UNKNOWN。枠を戻さない|
 |remove成功後のDB失敗|削除前に保存した候補結果を保持。再実行せず、既知IDの確定404とDB復旧を確認|
@@ -88,11 +90,13 @@ start前にattachし、start要求直前から単調時計で5秒を計測する
 
 recoverは管理者用の内部メソッドだけでHTTP公開しない。RESERVEDはcreate前と確定できる。既知IDは同じdaemon/imageでinspect→必要なら停止→削除→確定404→DB完了。未知IDや所有不一致は触らない。最終result不明の完了失敗は再送でも503となり、正常実行へ偽装しない。
 
-台帳は通常ファイル/単一link/専用識別子を検査し、既存/途中ファイルを消さない。管理者だけが操作できるprivate local directoryが前提で、敵対的な親directory差替えやroot侵害を防ぐものではない。Windows ACL・Linux本番権限の実機検証は未実施。codeは保存せずhashで照合するが、候補結果にはstdout/stderrが含まれる。保存容量、保管期間、backup/暗号化/rotationは本番導入前の別課題。
+台帳は通常ファイル/単一link/専用識別子を検査し、既存/途中ファイルを消さない。管理者だけが操作できるprivate local directoryが前提で、敵対的な親directory差替えやroot侵害を防ぐものではない。Windows ACL・Linux本番権限の実機検証は未実施。codeは保存せずhashで照合するが、候補結果にはstdout/stderrが含まれる。保管期間、backup/暗号化/rotationは本番導入前の別課題。
+
+レビュー対応で、jobs/nonce/lockの件数、DB/sidecar等のファイル長、空き容量による新規受付制限とcapacity_reportを追加した。未完了/UNKNOWNの結果・ID/hash/nonce/lockは削除しない。管理者のredact_completedは古いCOMPLETED結果だけをNULLにし、同一IDの再実行を防ぐtombstoneを残す。暗号化/長期archive/物理quota/rotationは未実装である。
 
 ## テストと未検証
 
-2026-11-19、Windowsの開発用Python 3.14で検証した。新規worker37件と既存実行API28件を含む回帰は507件中346件PASS・161件skip・FAIL 0件。正常・例外・exit code・期限・出力過多・認証・4枠・別API client・8process予約・所有不一致・作成返答消失・kill/remove失敗・DB失敗・process異常終了・復旧をモックで確認した。
+2026-11-19、Windowsの開発用Python 3.14でレビュー修正後を検証した。worker60件（従来37＋追補23）と実行API28件を含む回帰は530件中369件PASS・161件skip・FAIL 0件。正常・例外・exit code・期限・出力過多・認証・4枠・別API client・8process予約・所有不一致・作成返答消失・kill/remove失敗・DB失敗・process異常終了・復旧・容量保守・I/O部分失敗をモックで確認した。
 
 PROJECT_TEST_DATABASE_URLとEDITOR_LAB_IMAGE_IDは空にし、Docker関連2moduleを除いたunittestを実行した。skipは主にWindowsでは実行できないLinux Git/FS試験と未指定の隔離PostgreSQL試験。既存Starlette TestClientの非推奨警告は残る。実行別lockのWindows分岐は試験済みだが、Linux fcntl分岐の実機試験はNOT_RUN。依存追加インストールはしていない。
 

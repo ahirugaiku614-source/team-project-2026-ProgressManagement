@@ -60,7 +60,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.engine.sources, [request.code.encode()])
         self.assertFalse(self.engine.rows)
         self.assertEqual(self.state(request), "COMPLETED")
-        self.assertEqual([name for name, _ in self.engine.events], ["create", "attach", "start", "remove"])
+        self.assertEqual([name for name, _ in self.engine.events], ["create", "attach", "start", "close", "remove"])
 
     def test_python_exception_and_nonzero_exit_are_forwarded(self):
         self.engine.mode = "error"
@@ -76,7 +76,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(reply.result.status, "timeout")
         self.assertIsNone(reply.result.exit_code)
         self.assertGreaterEqual(reply.result.execution_time_ms, 5000)
-        self.assertEqual([name for name, _ in self.engine.events][-2:], ["kill", "remove"])
+        self.assertEqual([name for name, _ in self.engine.events][-3:], ["kill", "close", "remove"])
         self.assertEqual(len({cid for _, cid in self.engine.events}), 1)
         self.assertFalse(self.engine.rows)
 
@@ -241,12 +241,13 @@ class WorkerTests(unittest.TestCase):
             self.run_job()
         self.assertFalse(any(name in ("kill", "remove") for name, _ in self.engine.events))
 
-    def test_stream_failure_is_unknown_and_explicit_recovery_cleans_known_id(self):
+    def test_stream_failure_stops_and_cleans_only_confirmed_owned_id(self):
         self.engine.fail_read = True
         request = command()
         with self.assertRaises(Unavailable):
             self.run_job(request)
-        self.assertEqual(self.state(request), "UNKNOWN")
+        self.assertEqual(self.state(request), "COMPLETED")
+        self.assertEqual([name for name, _ in self.engine.events][-3:], ["kill", "close", "remove"])
         self.engine.fail_read = False
         self.assertTrue(self.make_service().recover(request.execution_id))
         self.assertEqual(self.state(request), "COMPLETED")
@@ -416,7 +417,10 @@ class WorkerTests(unittest.TestCase):
             process.join(15)
             self.assertEqual(process.exitcode, 23)
             self.assertEqual(self.state(request), "CREATING")
-            self.assertFalse(self.make_service().recover(request.execution_id))
+            restored = self.make_service()
+            self.assertIn(str(request.execution_id), restored.startup_report["unresolved"])
+            self.assertEqual(self.state(request), "UNKNOWN")
+            self.assertFalse(restored.recover(request.execution_id))
             self.assertEqual(self.state(request), "UNKNOWN")
             with self.assertRaises(Busy):
                 self.run_job()

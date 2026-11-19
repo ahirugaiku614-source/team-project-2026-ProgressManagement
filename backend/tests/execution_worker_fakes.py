@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 from app.editor_contracts import EditorBinding
 from app.execution_client import ExecutionCommand
 from execution_worker.auth import Authenticator
-from execution_worker.contracts import Frame, Observation
+from execution_worker.contracts import AttachAck, Frame, Observation, SendAck
 from execution_worker.engine import Driver, specification
 from execution_worker.registry import Registry
 
@@ -60,6 +60,11 @@ class FakeEngine:
         self.fail_create = self.fail_read = self.fail_kill = self.fail_remove = False
         self.keep_running = self.keep_removed = self.kill_lost = False
         self.runsc_verified = True
+        self.fail_attach = self.fail_send = self.fail_close = False
+        self.start_lost = False
+        self.partial_attach = self.partial_send = self.missing_stdin_close = False
+        self.late_attach = self.late_send = self.missing_eof = self.eof_running = False
+        self.io_calls = []
 
     def prerequisites(self, image):
         """実hostで確認すべき事項を合成する。NOT_RUNの実機証跡には変換しない。"""
@@ -75,8 +80,8 @@ class FakeEngine:
             frames = [Frame("stdout", b"Hello\n"), Frame("stderr", b""), Frame("eof")]
             if self.mode == "error":
                 frames = [Frame("stderr", b"ValueError: synthetic\n"), Frame("eof")]
-            elif self.mode == "overflow":
-                frames = [Frame("stdout", b"x" * 4096)] * 17 + [Frame("eof")]
+            elif self.mode in ("overflow", "stderr_overflow"):
+                frames = [Frame("stderr" if self.mode == "stderr_overflow" else "stdout", b"x" * 4096)] * 17 + [Frame("eof")]
             elif self.mode == "bad_utf8":
                 frames = [Frame("stdout", b"\xff" * 4096)] * 16 + [Frame("eof")]
             self.rows[cid] = {"spec": deepcopy(spec), "running": False, "exit_code": 0, "frames": deque(frames)}
@@ -90,11 +95,19 @@ class FakeEngine:
         row = self.rows.get(cid)
         if row is None:
             return None
+        if self.eof_running:
+            self.clock.ms += 50
         return Observation(cid, deepcopy(row["spec"]), row["running"], row["exit_code"])
 
-    def attach(self, cid):
+    def attach(self, cid, timeout_ms):
         """start前に合成stream接続の順序を記録する。"""
         self.events.append(("attach", cid))
+        self.io_calls.append(("attach", timeout_ms))
+        if self.fail_attach:
+            raise ConnectionError("SYNTHETIC_SECRET")
+        if self.late_attach:
+            self.clock.ms += timeout_ms + 1
+        return AttachAck(True, True, not self.partial_attach)
 
     def start(self, cid):
         """合成状態だけをRUNNINGへ変える。実コードを一切評価しない。"""
@@ -103,13 +116,31 @@ class FakeEngine:
             self.events.append(("start", cid))
             if sum(row["running"] for row in self.rows.values()) == 4:
                 self.four.set()
+        if self.start_lost:
+            raise TimeoutError("SYNTHETIC_SECRET")
 
-    def send(self, cid, source):
+    def send(self, cid, source, timeout_ms):
         """合成stdinを記録するだけ。exec/subprocess等を使わない。"""
-        self.sources.append(bytes(source))
+        self.io_calls.append(("send", timeout_ms))
+        sent = len(source) // 2 if self.partial_send or self.fail_send else len(source)
+        self.sources.append(bytes(source[:sent]))
+        if self.fail_send:
+            raise ConnectionError("SYNTHETIC_SECRET")
+        if self.late_send:
+            self.clock.ms += timeout_ms + 1
+        return SendAck(sent, not self.missing_stdin_close)
+
+    def close(self, cid, timeout_ms):
+        """合成local接続の閉鎖を記録する。container停止/削除とは別の操作である。"""
+        self.events.append(("close", cid))
+        self.io_calls.append(("close", timeout_ms))
+        if self.fail_close:
+            raise ConnectionError("SYNTHETIC_SECRET")
+        return True
 
     def read(self, cid, timeout_ms, maximum):
         """出力・待機・故障を再現する。読み取りは最大4096bytesの契約を守る。"""
+        self.io_calls.append(("read", timeout_ms, maximum))
         if self.fail_read:
             raise ConnectionError("SYNTHETIC_SECRET")
         self.entered.set()
@@ -120,10 +151,14 @@ class FakeEngine:
             return None
         row = self.rows[cid]
         if not row["frames"]:
+            self.clock.ms += timeout_ms
             return None
         frame = row["frames"].popleft()
         if frame.stream == "eof":
-            row["running"], row["exit_code"] = False, 7 if self.mode == "error" else 0
+            if not self.eof_running:
+                row["running"], row["exit_code"] = False, 7 if self.mode == "error" else 0
+            if self.missing_eof:
+                return None
         return frame
 
     def kill(self, cid):

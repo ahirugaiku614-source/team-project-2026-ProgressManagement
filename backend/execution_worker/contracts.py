@@ -10,6 +10,14 @@ class Unavailable(Exception):
     """基盤障害・不明状態の固定例外。コード・鍵・内部例外を含めない。"""
 
 
+class LockBusy(Unavailable):
+    """別の実行管理者がOS lockを保持中。孤立ジョブと誤認して状態を変更しない。"""
+
+
+class StreamDisconnected(Unavailable):
+    """通信切断・不完全frame・EOF欠落。正常な両stream終了とは区別する。"""
+
+
 class Denied(Exception):
     """通信相手・署名・再送nonce・所有者を確認できないときの固定拒否。"""
 
@@ -54,3 +62,20 @@ class Frame:
 
     stream: str
     data: bytes = b""
+
+
+@dataclass(frozen=True)
+class AttachAck:
+    """start前に非TTYの3方向が接続済みであることを示す合成/将来アダプターの応答。"""
+
+    stdin: bool
+    stdout: bool
+    stderr: bool
+
+
+@dataclass(frozen=True)
+class SendAck:
+    """source全量送信とstdin半closeの確認。部分送信を成功へ読み替えない。"""
+
+    bytes_sent: int
+    stdin_closed: bool
