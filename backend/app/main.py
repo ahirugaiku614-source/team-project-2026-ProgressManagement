@@ -474,6 +474,11 @@ def get_accessible_project(
 from app.editor_api import create_editor_router
 app.include_router(create_editor_router(get_project_team_member, get_accessible_project))
 
+# 短時間Python実行は独立したAPIとして登録する。既定workerは未接続で常に503。
+# 既存個人エディタの実行禁止ゲートやDocker設定は変更しない。
+from app.execution_api import create_execution_router
+app.include_router(create_execution_router(get_project_team_member, get_accessible_project))
+
 
 def project_storage_operation(storage, project_id, user_id=None, initialize=False):
     try:
