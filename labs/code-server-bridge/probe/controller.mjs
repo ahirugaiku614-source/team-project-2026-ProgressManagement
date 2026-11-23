@@ -14,6 +14,8 @@ export function registerProbe(vscode, context, { env = process.env, platform = p
   const disposable = vscode.commands.registerCommand(COMMAND, async () => {
     let guard;
     try {
+      const verificationMode = env.TEAM_PROGRESS_EDITOR_PROBE_MODE;
+      if (verificationMode !== undefined && verificationMode !== 'FIXED_TEXT_MATCH') throw new BridgeRejected();
       if (env.TEAM_PROGRESS_EDITOR_PROBE !== 'ISOLATED_LAB_ONLY' || platform !== 'linux' ||
           !Number.isSafeInteger(uid) || uid <= 0 || euid !== uid || vscode.workspace.isTrusted !== true ||
           typeof ''.isWellFormed !== 'function') throw new BridgeRejected();
@@ -51,8 +53,16 @@ export function registerProbe(vscode, context, { env = process.env, platform = p
           document.languageId !== snapshot.language || document.isDirty !== snapshot.isDirty || document.isClosed) throw new BridgeRejected();
       // FDの閉鎖まで成功してから結果表示。本文・パス・hash・tokenは表示/ログ/返値へ出さない。
       await guard.close(); guard = null;
-      await vscode.window.showInformationMessage(
+      if (verificationMode === 'FIXED_TEXT_MATCH') {
+        const match = snapshot.code === 'TEAM_PROGRESS_UNSAVED_PROBE_V1\n';
+        const passed = match && snapshot.isDirty === true;
+        await vscode.window.showInformationMessage(
+          `match=${match ? 'MATCH' : 'MISMATCH'}; isDirty=${snapshot.isDirty}; result=${passed ? 'PASS' : 'FAIL'}`,
+        );
+      } else {
+        await vscode.window.showInformationMessage(
         `本文取得の検証完了：${snapshot.language}／文書版${snapshot.documentVersion}／未保存${snapshot.isDirty ? 'あり' : 'なし'}。送信・保存・実行なし。`);
+      }
     } catch {
       await vscode.window.showWarningMessage('本文取得を拒否しました。検証環境・対象文書・所有権を確認してください。');
     } finally {

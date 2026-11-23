@@ -216,3 +216,169 @@ test('実体検査中のworkspace変更・URI差替え・信頼取消しも本�
     assert.ok(f.events.includes('close'));
   }
 });
+
+
+// Fixed-text expectations are independent of the product's comparison value.
+const fixedProbeText = 'TEAM_PROGRESS_UNSAVED_PROBE_V1\n';
+function observeProbeWarnings(f) {
+  const showWarning = f.api.window.showWarningMessage;
+  f.probeWarningKinds = [];
+  f.api.window.showWarningMessage = async (...args) => {
+    f.probeWarningKinds.push(args[1]?.modal === true ? 'CONFIRMATION' : 'ERROR');
+    return showWarning.apply(f.api.window, args);
+  };
+  return f;
+}
+function fixedProbeFixture(code = fixedProbeText) {
+  const f = observeProbeWarnings(editorFixture(code));
+  f.options.env.TEAM_PROGRESS_EDITOR_PROBE_MODE = 'FIXED_TEXT_MATCH';
+  return f;
+}
+async function invokeFixedProbe(f) {
+  const command = f.register();
+  await command();
+}
+function assertProbeFeedback(f, expected) {
+  assert.deepEqual(f.info, [expected]);
+  assert.deepEqual(f.probeWarningKinds, ['CONFIRMATION']);
+  assert.equal(f.warnings.length, 1);
+}
+test('固定照合：一致した未保存本文だけPASS', async () => {
+  const f = fixedProbeFixture();
+  await invokeFixedProbe(f);
+  assert.equal(f.reads(), 1);
+  assertProbeFeedback(f, 'match=MATCH; isDirty=true; result=PASS');
+});
+test('固定照合：不一致はFAIL', async () => {
+  const f = fixedProbeFixture('different synthetic text\n');
+  await invokeFixedProbe(f);
+  assertProbeFeedback(f, 'match=MISMATCH; isDirty=true; result=FAIL');
+});
+test('固定照合：保存済み状態は一致してもFAIL', async () => {
+  const f = fixedProbeFixture();
+  f.document.isDirty = false;
+  await invokeFixedProbe(f);
+  assertProbeFeedback(f, 'match=MATCH; isDirty=false; result=FAIL');
+});
+test('固定照合：取得中の対象document切替を拒否', async () => {
+  const f = fixedProbeFixture();
+  const read = f.document.getText;
+  f.document.getText = () => {
+    const text = read.call(f.document);
+    f.api.window.activeTextEditor = { document: { ...f.document } };
+    return text;
+  };
+  await invokeFixedProbe(f);
+  assert.equal(f.info.length, 0);
+  assert.deepEqual(f.probeWarningKinds, ['CONFIRMATION', 'ERROR']);
+  assert.equal(f.warnings.length, 2);
+});
+test('固定照合：取得中のversion変更を拒否', async () => {
+  const f = fixedProbeFixture();
+  const read = f.document.getText;
+  f.document.getText = () => {
+    const text = read.call(f.document);
+    f.document.version += 1;
+    return text;
+  };
+  await invokeFixedProbe(f);
+  assert.equal(f.info.length, 0);
+  assert.deepEqual(f.probeWarningKinds, ['CONFIRMATION', 'ERROR']);
+  assert.equal(f.warnings.length, 2);
+});
+test('固定照合：サイズ超過を拒否', async () => {
+  const f = fixedProbeFixture('x'.repeat(65537));
+  await invokeFixedProbe(f);
+  assert.equal(f.info.length, 0);
+  assert.deepEqual(f.probeWarningKinds, ['CONFIRMATION', 'ERROR']);
+  assert.equal(f.warnings.length, 2);
+});
+test('固定照合：対象外言語を拒否', async () => {
+  const f = fixedProbeFixture();
+  f.document.languageId = 'plaintext';
+  await invokeFixedProbe(f);
+  assert.equal(f.reads(), 0);
+  assert.equal(f.info.length, 0);
+});
+test('固定照合：Untitledを拒否', async () => {
+  const f = fixedProbeFixture();
+  f.document.uri.scheme = 'untitled';
+  await invokeFixedProbe(f);
+  assert.equal(f.reads(), 0);
+  assert.equal(f.info.length, 0);
+});
+test('固定照合：確認キャンセルでは取得しない', async () => {
+  const f = fixedProbeFixture();
+  f.api.window.showWarningMessage = async () => undefined;
+  await invokeFixedProbe(f);
+  assert.equal(f.reads(), 0);
+  assert.equal(f.info.length, 0);
+});
+test('固定照合：本文・ハッシュ・consoleログを出さない', async () => {
+  const logs = [];
+  const methods = ['log', 'info', 'warn', 'error', 'debug'];
+  const originals = methods.map(name => console[name]);
+  const f = fixedProbeFixture();
+  let result;
+  try {
+    methods.forEach(name => { console[name] = (...args) => logs.push(args); });
+    const command = f.register();
+    result = await command();
+  } finally {
+    methods.forEach((name, index) => { console[name] = originals[index]; });
+  }
+  assert.equal(result, undefined);
+  assert.equal(logs.length, 0);
+  assert.equal(JSON.stringify([...f.info, ...f.warnings]).includes(fixedProbeText.trim()), false);
+  assert.doesNotMatch(JSON.stringify(f.info), /\b[0-9a-f]{64}\b/i);
+  assertProbeFeedback(f, 'match=MATCH; isDirty=true; result=PASS');
+});
+test('固定照合：合成本文を実行せず実通信を呼ばない', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousEval = globalThis.eval;
+  let communications = 0;
+  let executions = 0;
+  const f = fixedProbeFixture('throw new Error("synthetic-not-executed");\n');
+  try {
+    globalThis.fetch = () => { communications += 1; throw new Error('FORBIDDEN'); };
+    globalThis.eval = () => { executions += 1; throw new Error('FORBIDDEN'); };
+    await invokeFixedProbe(f);
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.eval = previousEval;
+  }
+  assert.equal(communications, 0);
+  assert.equal(executions, 0);
+  assertProbeFeedback(f, 'match=MISMATCH; isDirty=true; result=FAIL');
+});
+test('通常モードでは任意の許可本文を固定テキストに限定しない', async () => {
+  const f = observeProbeWarnings(editorFixture('arbitrary synthetic editor buffer\n'));
+  await invokeFixedProbe(f);
+  assert.equal(f.reads(), 1);
+  assert.equal(f.info.length, 1);
+  assert.deepEqual(f.probeWarningKinds, ['CONFIRMATION']);
+  assert.equal(f.warnings.length, 1);
+  assert.doesNotMatch(f.info[0], /match=|result=/);
+});
+test('固定照合：改行・BOM・末尾改行を正規化しない', async () => {
+  for (const code of [
+    'TEAM_PROGRESS_UNSAVED_PROBE_V1\r\n',
+    'TEAM_PROGRESS_UNSAVED_PROBE_V1',
+    '\uFEFFTEAM_PROGRESS_UNSAVED_PROBE_V1\n',
+  ]) {
+    const f = fixedProbeFixture(code);
+    await invokeFixedProbe(f);
+    assertProbeFeedback(f, 'match=MISMATCH; isDirty=true; result=FAIL');
+  }
+});
+test('固定照合：未知モードから通常モードへフォールバックしない', async () => {
+  for (const mode of ['', 'UNKNOWN_MODE']) {
+    const f = fixedProbeFixture();
+    f.options.env.TEAM_PROGRESS_EDITOR_PROBE_MODE = mode;
+    await invokeFixedProbe(f);
+    assert.equal(f.reads(), 0);
+    assert.equal(f.info.length, 0);
+    assert.deepEqual(f.probeWarningKinds, ['ERROR']);
+    assert.equal(f.warnings.length, 1);
+  }
+});
