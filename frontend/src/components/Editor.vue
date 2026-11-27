@@ -4,6 +4,8 @@
       <h2>Code Editor</h2>
       <div class="header-actions">
         <span class="current-file">{{ activeFile?.name ?? 'ファイル未選択' }}</span>
+        <!-- 通常のページ遷移にし、既存beforeunloadの未保存警告を維持する。保存や提出は呼ばない。 -->
+        <a :href="sharingUrl">コード共有・レビューへ</a>
         <button @click="saveFile" :disabled="busy || !activeFile || !isDirty(activeFile)">
           {{ busy ? '処理中...' : '保存' }}
         </button>
@@ -12,6 +14,7 @@
         </button>
       </div>
     </header>
+    <p class="status-message">このエディタの保存は変更提出ではありません。タスクのcode-server作業環境とは別の機能です。</p>
 
     <div class="editor-main">
       <aside class="file-sidebar">
@@ -69,11 +72,22 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { useRoute } from 'vue-router'
 import { VueMonacoEditor } from '@guolao/vue-monaco-editor'
 import { auth } from '../firebase'
 
 // ブラウザからアクセスするFastAPIのURL（Docker内部のbackendではない）
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const currentRoute = useRoute()
+// 元のTeam/Project/Taskだけを引き継ぐ。本文・確認ID・認証情報をURLに含めない。
+const sharingUrl = computed(() => {
+  const query = new URLSearchParams()
+  for (const name of ['team', 'project', 'task']) {
+    const value = currentRoute.query[name]
+    if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) query.set(name, value)
+  }
+  return '/CodeSharing' + (query.size ? '?' + query : '')
+})
 const files = ref([])
 const activeFileId = ref(null)
 const newFileName = ref('')
