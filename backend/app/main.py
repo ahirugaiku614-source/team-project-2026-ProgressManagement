@@ -474,6 +474,13 @@ def get_accessible_project(
 from app.editor_api import create_editor_router
 app.include_router(create_editor_router(get_project_team_member, get_accessible_project))
 
+from app.submission_api import create_submission_router
+app.include_router(create_submission_router(get_project_team_member))
+
+# 新しい入口も既存Firebase/Team認証を使用する。模擬実装はHTTPから選択できない。
+from app.task_review_api import create_task_review_router
+app.include_router(create_task_review_router(get_project_team_member))
+
 # 短時間Python実行は独立したAPIとして登録する。既定workerは未接続で常に503。
 # 既存個人エディタの実行禁止ゲートやDocker設定は変更しない。
 from app.execution_api import create_execution_router

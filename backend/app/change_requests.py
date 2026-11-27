@@ -67,12 +67,7 @@ def submit_change_request(db, storage, project_id, user_id, payload):
             created_at = datetime.fromisoformat(manifest["created_at"])
         except (ValueError, TypeError) as error:
             raise StorageConflict("Review journal timestamp is invalid") from error
-        row = models.ChangeRequest(
-            project_id=project_id, submitted_by=user_id, request_key=request_key,
-            title=payload.title, description=payload.description, state="OPEN",
-            base_commit=manifest["base_commit"], snapshot_commit=manifest["snapshot_commit"],
-            git_ref=f"refs/change-requests/{key}/head", created_at=created_at, updated_at=created_at,
-        )
+        row = _row_from_manifest(manifest)
         try:
             db.add(row)
             db.commit()
@@ -82,6 +77,41 @@ def submit_change_request(db, storage, project_id, user_id, payload):
             db.rollback()
             raise
         return row, True
+
+
+def _row_from_manifest(manifest):
+    """既存経路・タスク変換経路でDB列の対応を共有する。commitは呼出し元が行う。"""
+    created_at=datetime.fromisoformat(manifest['created_at'])
+    return models.ChangeRequest(project_id=manifest['project_id'],submitted_by=manifest['submitted_by'],
+        request_key=manifest['request_key'],title=manifest['title'],description=manifest['description'],state='OPEN',
+        base_commit=manifest['base_commit'],snapshot_commit=manifest['snapshot_commit'],
+        git_ref='refs/change-requests/'+manifest['ref_key']+'/head',created_at=created_at,updated_at=created_at)
+
+
+def register_review_snapshot(db,review,manifest,*,repair=True):
+    """認可済み内部サービス専用。公開APIへ任意commit受付を追加しない。
+
+    Projectロック下で既知のmanifestを照合し、既存snapshot検証を通してからflushする。
+    db.commitを内部で行わず、変換対応表と同一トランザクションで確定できるようにする。
+    """
+    from app.change_request_reviews import verify_snapshot
+    key=reference_key(manifest['project_id'],manifest['submitted_by'],manifest['request_key'])
+    if manifest['ref_key']!=key:raise StorageConflict('Invalid review snapshot identity')
+    existing=review.manifest(key)
+    row=db.query(models.ChangeRequest).filter_by(project_id=manifest['project_id'],
+        submitted_by=manifest['submitted_by'],request_key=manifest['request_key']).first()
+    if existing is not None and existing!=manifest:raise StorageConflict('Review journal differs')
+    if row is not None and row_manifest(row)!=manifest:raise StorageConflict('Review database differs')
+    if not repair and (row is None or existing is None):raise StorageConflict('Review evidence missing')
+    if existing is None:
+        if row is not None or any(review.read_ref(('change-requests',key,part)) is not None for part in ('base','head')):
+            raise StorageConflict('Review journal missing for existing evidence')
+        review.save_manifest(manifest)
+    if repair:review.ensure_refs(manifest)
+    candidate=row if row is not None else _row_from_manifest(manifest)
+    verify_snapshot(review,candidate)
+    if row is None:db.add(candidate);db.flush()
+    return candidate
 
 
 def change_request_diff(storage, row):

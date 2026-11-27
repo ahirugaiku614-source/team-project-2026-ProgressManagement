@@ -337,3 +337,164 @@ class CodeFile(Base):
         onupdate=datetime.utcnow,
     )
 
+
+class TaskSubmissionTarget(Base):
+    """提出対象だけを明示登録する。既存Taskの列・レスポンスは変更しない。"""
+    __tablename__ = "task_submission_targets"
+    __table_args__ = (
+        UniqueConstraint("project_id", "student_id", "folder_path", name="uq_task_submission_folder"),
+        CheckConstraint("length(folder_path) BETWEEN 1 AND 512", name="ck_task_submission_folder_length"),
+        {"info": {"requires_explicit_migration": True}},
+    )
+
+    task_id = Column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    folder_path = Column(String(512), nullable=False)
+    registered_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, server_default=text("CURRENT_TIMESTAMP"))
+
+
+class WorkBasis(Base):
+    """編集開始の不変基準。Task/セッション削除で履歴を失わない。"""
+    __tablename__ = 'work_bases'
+    __table_args__ = (CheckConstraint("state IN ('ACTIVE','ENDED','SUPERSEDED','REVOKED')", name='ck_work_basis_state'),
+                      {'info': {'requires_explicit_migration': True}})
+    id = Column(String(36), primary_key=True)
+    member_id = Column(Integer, ForeignKey('users.id', ondelete='RESTRICT'), nullable=False)
+    team_id = Column(Integer, ForeignKey('teams.id', ondelete='RESTRICT'), nullable=False)
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete='RESTRICT'), nullable=False)
+    task_id = Column(Integer, nullable=False)
+    workspace_id = Column(String(36), nullable=False, unique=True)
+    source_generation = Column(Integer, nullable=False)
+    folder_path = Column(String(512), nullable=False)
+    binding_version = Column(String(64), nullable=False)
+    base_commit = Column(String(40), nullable=False)
+    policy_version = Column(Integer, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+    state = Column(String(16), nullable=False)
+
+
+class WorkCaptureBinding(Base):
+    """収集開始前に基準を固定する。過去の収集へ基準を後付けしない。"""
+    __tablename__ = 'work_capture_bindings'
+    __table_args__ = ({'info': {'requires_explicit_migration': True}},)
+    submission_id = Column(String(36),ForeignKey('task_submissions.id',ondelete='RESTRICT'),primary_key=True)
+    basis_id = Column(String(36),ForeignKey('work_bases.id',ondelete='RESTRICT'),nullable=False)
+    workspace_id = Column(String(36),nullable=False)
+    source_generation = Column(Integer,nullable=False)
+    editing_session_id = Column(String(36),nullable=False)
+
+
+class WorkReviewPreview(Base):
+    """明示確認した変換入力を保持する。本文・認証情報は格納しない。"""
+    __tablename__ = 'work_review_previews'
+    __table_args__ = ({'info': {'requires_explicit_migration': True}},)
+    id = Column(String(36), primary_key=True)
+    basis_id = Column(String(36), ForeignKey('work_bases.id', ondelete='RESTRICT'), nullable=False)
+    submission_id = Column(String(36), ForeignKey('task_submissions.id', ondelete='RESTRICT'), nullable=False)
+    input_digest = Column(String(64), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+
+class WorkWorkspaceRevision(Base):
+    """管理側だけが更新する保存元世代。利用者のリクエストから更新しない。"""
+    __tablename__ = 'work_workspace_revisions'
+    __table_args__ = (CheckConstraint('generation > 0', name='ck_workspace_generation'),
+                      {'info': {'requires_explicit_migration': True}})
+    workspace_id = Column(String(36), primary_key=True)
+    generation = Column(Integer, nullable=False)
+
+
+class WorkCollectionDiagnostic(Base):
+    """収集失敗の固定コードだけを保持する。内部例外の文字列は保存しない。"""
+    __tablename__ = 'work_collection_diagnostics'
+    __table_args__ = ({'info': {'requires_explicit_migration': True}},)
+    submission_id = Column(String(36), ForeignKey('task_submissions.id', ondelete='RESTRICT'), primary_key=True)
+    code = Column(String(64), nullable=False)
+
+
+class TaskDeletionIntent(Base):
+    """基準treeから発行した削除証拠。任意パスを削除許可にしない。"""
+    __tablename__ = 'task_deletion_intents'
+    __table_args__ = (UniqueConstraint('basis_id','submission_id','path',name='uq_task_deletion_intent'),
+                      {'info': {'requires_explicit_migration': True}})
+    id = Column(String(36), primary_key=True)
+    basis_id = Column(String(36), ForeignKey('work_bases.id', ondelete='RESTRICT'), nullable=False)
+    submission_id = Column(String(36), ForeignKey('task_submissions.id', ondelete='RESTRICT'), nullable=False)
+    member_id = Column(Integer, nullable=False)
+    project_id = Column(Integer, nullable=False)
+    task_id = Column(Integer, nullable=False)
+    path = Column(String(512), nullable=False)
+    blob = Column(String(40), nullable=False)
+    mode = Column(String(6), nullable=False)
+    binding_version = Column(String(64), nullable=False)
+    policy_version = Column(Integer, nullable=False)
+    confirmation_id = Column(String(36), nullable=False)
+
+
+class TaskReviewConversion(Base):
+    """収集一件→最大一依頼。レビュー結果は既存ChangeRequest側にだけ置く。"""
+    __tablename__ = 'task_review_conversions'
+    __table_args__ = (CheckConstraint("state IN ('PREPARED','READY','NO_CHANGE','REVIEW_REQUIRED')",name='ck_task_review_conversion_state'),
+                      {'info': {'requires_explicit_migration': True}})
+    submission_id = Column(String(36), ForeignKey('task_submissions.id',ondelete='RESTRICT'), primary_key=True)
+    basis_id = Column(String(36), ForeignKey('work_bases.id',ondelete='RESTRICT'), nullable=False)
+    input_digest = Column(String(64), nullable=False)
+    recipe = Column(Text, nullable=False)
+    state = Column(String(24), nullable=False)
+    generated_commit = Column(String(40), nullable=True)
+    change_request_id = Column(Integer, ForeignKey('change_requests.id',ondelete='RESTRICT'), unique=True)
+    previous_request_id = Column(Integer, ForeignKey('change_requests.id',ondelete='RESTRICT'), nullable=True)
+
+
+class SubmissionPermit(Base):
+    __tablename__ = "submission_permits"
+    __table_args__ = (
+        CheckConstraint("purpose = 'TASK_SUBMISSION'", name="ck_submission_permit_purpose"),
+        CheckConstraint("expires_at > created_at", name="ck_submission_permit_expiry"),
+        {"info": {"requires_explicit_migration": True}},
+    )
+    id = Column(String(36), primary_key=True)
+    token_digest = Column(String(64), nullable=False, unique=True)
+    student_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="RESTRICT"), nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False)
+    # Historical identity: deliberately no cascading FK to Task/target.
+    task_id = Column(Integer, nullable=False)
+    editing_session_id = Column(String(36), nullable=False)
+    folder_path = Column(String(512), nullable=False)
+    purpose = Column(String(32), nullable=False)
+    created_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    consumed_at = Column(DateTime, nullable=True)
+
+
+class TaskSubmission(Base):
+    __tablename__ = "task_submissions"
+    __table_args__ = (
+        UniqueConstraint("student_id", "task_id", "request_id", name="uq_task_submission_request"),
+        CheckConstraint("state IN ('PROCESSING','SUBMITTED','REVIEW_REQUIRED')", name="ck_task_submission_state"),
+        CheckConstraint("state != 'SUBMITTED' OR (git_ref IS NOT NULL AND commit_id IS NOT NULL AND submitted_at IS NOT NULL AND file_count IS NOT NULL AND total_bytes IS NOT NULL)", name="ck_task_submission_receipt"),
+        CheckConstraint("file_count IS NULL OR file_count BETWEEN 1 AND 1000", name="ck_task_submission_files"),
+        CheckConstraint("total_bytes IS NULL OR total_bytes BETWEEN 0 AND 10485760", name="ck_task_submission_bytes"),
+        {"info": {"requires_explicit_migration": True}},
+    )
+    id = Column(String(36), primary_key=True)
+    student_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="RESTRICT"), nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False)
+    task_id = Column(Integer, nullable=False)
+    request_id = Column(String(36), nullable=False)
+    editing_session_id = Column(String(36), nullable=False)
+    permit_id = Column(String(36), ForeignKey("submission_permits.id", ondelete="RESTRICT"), nullable=False, unique=True)
+    permit_digest = Column(String(64), nullable=False)
+    folder_path = Column(String(512), nullable=False)
+    state = Column(String(24), nullable=False)
+    git_ref = Column(String(100), nullable=True, unique=True)
+    commit_id = Column(String(40), nullable=True)
+    created_at = Column(DateTime, nullable=False)
+    submitted_at = Column(DateTime, nullable=True)
+    file_count = Column(Integer, nullable=True)
+    total_bytes = Column(Integer, nullable=True)
+
