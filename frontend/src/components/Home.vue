@@ -1,4 +1,3 @@
-
 <template>
   <div class="home-container">
 
@@ -23,26 +22,34 @@
       </button>
 
       <!-- 期限が近いプロジェクト -->
-      <button class="progress-button">
+      <button
+        class="progress-button"
+        @click="goToSchedule"
+      >
         <span>期限が近いプロジェクト</span>
         <span class="small-text">プロジェクトの進捗を確認</span>
       </button>
 
       <!-- プロジェクト一覧 -->
-      <button class="project-list-button">
+      <button
+        class="project-list-button"
+        @click="goToCodeSharing"
+      >
         <span>プロジェクト一覧</span>
         <span class="small-text">参加中のプロジェクトを確認</span>
       </button>
 
       <!-- エディタ -->
-      <button class="editor-button">
+      <button
+        class="editor-button"
+        @click="goToEditor"
+      >
         <span>エディタへ</span>
         <span class="small-text">コードの作成・編集</span>
       </button>
 
       <!-- 左下の設定・ログアウトボタン -->
       <div class="bottom-buttons">
-
         <button class="setting-button">
           設定
         </button>
@@ -54,7 +61,6 @@
         >
           {{ isLoggingOut ? '処理中...' : 'ログアウト' }}
         </button>
-
       </div>
 
     </aside>
@@ -178,19 +184,28 @@
 
           <div class="quick-grid">
 
-            <button class="quick-card">
+            <button
+              class="quick-card"
+              @click="goToEditor"
+            >
               <span class="quick-icon">⌨</span>
               <strong>コード編集</strong>
               <small>エディタを開く</small>
             </button>
 
-            <button class="quick-card">
+            <button
+              class="quick-card"
+              @click="goToSchedule"
+            >
               <span class="quick-icon">☑</span>
               <strong>タスク管理</strong>
               <small>作業状況を確認</small>
             </button>
 
-            <button class="quick-card">
+            <button
+              class="quick-card"
+              @click="goToCodeSharing"
+            >
               <span class="quick-icon">▤</span>
               <strong>プロジェクト</strong>
               <small>一覧を確認</small>
@@ -229,13 +244,19 @@ import CommunicationPanel from "./CommunicationPanel.vue";
 const router = useRouter();
 
 
+// =========================
 // プロジェクト情報
+// =========================
+
 const projectName = ref("画面表示エラーの解決方法");
 
 const lastEdited = ref("2026年11月9日");
 
 
+// =========================
 // メンバー情報
+// =========================
+
 const members = ref([
   {
     id: 1,
@@ -258,11 +279,35 @@ const members = ref([
 ]);
 
 
-// ログアウト処理中かどうか
+// =========================
+// ページ移動機能
+// =========================
+
+// プロジェクト一覧へ移動
+function goToCodeSharing() {
+  console.log("プロジェクト一覧ボタンがクリックされました");
+  router.push("/CodeSharing");
+}
+
+
+// スケジュール画面へ移動
+function goToSchedule() {
+  router.push("/schedule");
+}
+
+
+// エディタ画面へ移動
+function goToEditor() {
+  router.push("/Editor");
+}
+
+
+// =========================
+// ログアウト機能
+// =========================
+
 const isLoggingOut = ref(false);
 
-
-// ログアウト機能
 async function handleLogout() {
 
   // 二重実行を防止
@@ -303,7 +348,10 @@ async function handleLogout() {
 }
 
 
+// =========================
 // メンバー追加機能
+// =========================
+
 function addMember() {
 
   const name = window.prompt(
@@ -555,80 +603,29 @@ button:hover {
 }
 
 
-/* =========================
-   左下の設定・ログアウトボタン
-========================= */
-
+/* 左下の設定・ログアウトボタン */
 .bottom-buttons {
   width: 100%;
-
   display: flex;
   align-items: center;
   gap: 10px;
 
-  /* メニューの下部に配置 */
   margin-top: auto;
-  margin-bottom: 0;
-
-  padding: 10px 0 10px 7px;
-
+  margin-bottom: 10px;
+  padding-left: 7px;
   flex-shrink: 0;
-
-  /* スクロールしても下部に表示 */
-  position: sticky;
-  bottom: 0;
-
-  /* 背景と重なり順 */
-  background: #ffffff;
-  z-index: 10;
 }
 
 
-/* 設定ボタン */
+/* 設定 */
 .setting-button {
   width: 87px;
   height: 39px;
-
   flex: 0 0 87px;
 
   background: #f1f5f9;
   border: 1px solid #cbd5e1;
   border-radius: 6px;
-}
-
-
-/* ログアウトボタン */
-.logout-button {
-  flex: 1;
-  min-width: 0;
-  height: 39px;
-
-  padding: 8px 10px;
-
-  background: #ef4444;
-  color: #ffffff;
-
-  border: none;
-  border-radius: 6px;
-
-  font-size: 13px;
-  font-weight: bold;
-
-  white-space: nowrap;
-}
-
-.logout-button:hover:not(:disabled) {
-  background: #dc2626;
-}
-
-.logout-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.logout-button:focus-visible {
-  outline: 3px solid rgba(239, 68, 68, 0.3);
-  outline-offset: 3px;
 }
 
 
@@ -707,6 +704,39 @@ button:hover {
 
   padding: 9px 13px;
   border-radius: 6px;
+}
+
+
+/* ログアウトボタン */
+.logout-button {
+  flex: 1;
+  min-width: 0;
+  height: 39px;
+  padding: 8px 10px;
+
+  background: #ef4444;
+  color: #ffffff;
+
+  border: none;
+  border-radius: 6px;
+
+  font-size: 13px;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.logout-button:hover:not(:disabled) {
+  background: #dc2626;
+}
+
+.logout-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.logout-button:focus-visible {
+  outline: 3px solid rgba(239, 68, 68, 0.3);
+  outline-offset: 3px;
 }
 
 
@@ -1102,7 +1132,7 @@ button:hover {
 
   .bottom-buttons {
     gap: 5px;
-    padding: 10px 0 10px 0;
+    padding-left: 0;
   }
 
   .setting-button {

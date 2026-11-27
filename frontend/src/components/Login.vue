@@ -40,7 +40,11 @@
     </form>
 
     <div class="toggle-mode">
-      <button type="button" @click="isSignUp = !isSignUp">
+      <button
+        type="button"
+        @click="isSignUp = !isSignUp"
+        :disabled="isLoading"
+      >
         {{
           isSignUp
             ? 'すでにアカウントをお持ちの方（ログインへ）'
@@ -56,85 +60,80 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { auth } from '../firebase';
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { auth } from '../firebase'
 
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword
-} from 'firebase/auth';
+} from 'firebase/auth'
 
-const router = useRouter();
+const router = useRouter()
 
-const email = ref('');
-const password = ref('');
-const isSignUp = ref(false);
-const isLoading = ref(false);
-const errorMessage = ref('');
+const email = ref('')
+const password = ref('')
+const isSignUp = ref(false)
+const isLoading = ref(false)
+const errorMessage = ref('')
 
 const handleSubmit = async () => {
-  if (isLoading.value) return;
+  if (isLoading.value) return
 
-  errorMessage.value = '';
-  isLoading.value = true;
+  errorMessage.value = ''
+  isLoading.value = true
 
   try {
-    let res;
-
     if (isSignUp.value) {
       // 新規アカウント登録
-      res = await createUserWithEmailAndPassword(
+      await createUserWithEmailAndPassword(
         auth,
         email.value,
         password.value
-      );
+      )
     } else {
       // ログイン
-      res = await signInWithEmailAndPassword(
+      await signInWithEmailAndPassword(
         auth,
         email.value,
         password.value
-      );
+      )
     }
 
-    // Firebase ID Tokenを取得
-    const idToken = await res.user.getIdToken();
-
-    console.log('=== Firebase ID Token ===');
-    console.log(idToken);
-
-    // 認証成功後にホーム画面へ移動
-   await router.replace('/');
+    // 認証成功後、ルーターがプロジェクト登録状況を確認する
+    await router.replace('/')
   } catch (err) {
-    console.error(err);
-    errorMessage.value = getJapaneseErrorMessage(err.code);
+    console.error(err)
+    errorMessage.value = getJapaneseErrorMessage(err.code)
   } finally {
-    isLoading.value = false;
+    isLoading.value = false
   }
-};
+}
 
 // エラーメッセージの日本語化
 const getJapaneseErrorMessage = (code) => {
   switch (code) {
     case 'auth/email-already-in-use':
-      return 'このメールアドレスは既に登録されています。';
+      return 'このメールアドレスは既に登録されています。'
 
     case 'auth/invalid-email':
-      return 'メールアドレスの形式が正しくありません。';
+      return 'メールアドレスの形式が正しくありません。'
 
     case 'auth/weak-password':
-      return 'パスワードは6文字以上で入力してください。';
+      return 'パスワードは6文字以上で入力してください。'
 
     case 'auth/user-not-found':
     case 'auth/wrong-password':
     case 'auth/invalid-credential':
-      return 'メールアドレスまたはパスワードが間違っています。';
+      return 'メールアドレスまたはパスワードが間違っています。'
+
+    case 'auth/network-request-failed':
+      return 'ネットワークに接続できません。通信環境を確認してください。'
 
     default:
-      return '認証エラーが発生しました。';
+      return '認証エラーが発生しました。'
   }
-};
+}
 </script>
 
 <style scoped>
@@ -230,6 +229,11 @@ input:focus-visible {
 .toggle-mode button:hover {
   color: #1d4ed8;
   text-decoration: underline;
+}
+
+.toggle-mode button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .error-msg {

@@ -32,14 +32,21 @@ async def safe_validation_error(request, error):
         # JSONの不正なUnicodeをエラー本文に再表示して500になることを防ぐ。
         return JSONResponse(status_code=422, content={"detail": "Input must be valid UTF-8"})
 
-# Vue.js (http://localhost:5173) からの通信を許可する CORS 設定
+
+# Vue.jsからの通信を許可するCORS設定
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 @app.get("/")
 def read_root():
