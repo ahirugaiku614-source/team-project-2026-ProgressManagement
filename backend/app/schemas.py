@@ -1,15 +1,19 @@
+
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from typing import Literal, Optional
 from datetime import datetime
 from uuid import UUID
 from pydantic import ConfigDict
 
+
 class UserBase(BaseModel):
     email: EmailStr
     name: Optional[str] = None
 
+
 class UserCreate(UserBase):
     firebase_uid: str
+
 
 class UserResponse(UserBase):
     id: int
@@ -19,13 +23,16 @@ class UserResponse(UserBase):
     class Config:
         from_attributes = True
 
+
 class TaskBase(BaseModel):
     title: str
     description: Optional[str] = None
     status: str = "todo"  # todo, in_progress, done
 
+
 class TaskCreate(TaskBase):
     pass
+
 
 class TaskResponse(TaskBase):
     id: int
@@ -35,14 +42,23 @@ class TaskResponse(TaskBase):
     class Config:
         from_attributes = True
 
+
+# チーム作成時の入力データ
 class TeamCreate(BaseModel):
     name: str
     description: Optional[str] = None
 
+    # 重複作成防止用の操作ID
+    request_key: Optional[UUID] = None
 
+
+# プロジェクト作成時の入力データ
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: Optional[str] = None
+
+    # 重複作成防止用の操作ID
+    request_key: Optional[UUID] = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -110,6 +126,7 @@ class ChangeRequestResponse(BaseModel):
     git_ref: str
     created_at: datetime
     updated_at: datetime
+
     # 既存のキー・意味は維持し、この5項目だけを追加する。
     # 古い依頼は判定レコードがないため、PENDINGとnullが返る。
     review_decision: Literal["PENDING", "APPROVED", "CHANGES_REQUESTED"] = "PENDING"
@@ -197,6 +214,7 @@ class TeamResponse(BaseModel):
 class TeamJoinRequest(BaseModel):
     invite_code: str
 
+
 # チームメンバー情報の返却データ
 class TeamMemberResponse(BaseModel):
     user_id: int
@@ -207,6 +225,7 @@ class TeamMemberResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 # チームタスク作成時の入力データ
 class TeamTaskCreate(BaseModel):

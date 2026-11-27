@@ -13,6 +13,7 @@
           required
           autocomplete="email"
           placeholder="example@test.com"
+          :disabled="isLoading"
         />
       </div>
 
@@ -25,10 +26,15 @@
           required
           :autocomplete="isSignUp ? 'new-password' : 'current-password'"
           placeholder="6文字以上"
+          :disabled="isLoading"
         />
       </div>
 
-      <button type="submit" class="submit-btn" :disabled="isLoading">
+      <button
+        type="submit"
+        class="submit-btn"
+        :disabled="isLoading"
+      >
         {{
           isLoading
             ? '処理中...'
@@ -40,7 +46,11 @@
     </form>
 
     <div class="toggle-mode">
-      <button type="button" @click="isSignUp = !isSignUp">
+      <button
+        type="button"
+        @click="toggleMode"
+        :disabled="isLoading"
+      >
         {{
           isSignUp
             ? 'すでにアカウントをお持ちの方（ログインへ）'
@@ -56,84 +66,117 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { auth } from '../firebase';
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { auth } from '../firebase'
 
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword
-} from 'firebase/auth';
+} from 'firebase/auth'
 
-const router = useRouter();
+const router = useRouter()
 
-const email = ref('');
-const password = ref('');
-const isSignUp = ref(false);
-const isLoading = ref(false);
-const errorMessage = ref('');
+const email = ref('')
+const password = ref('')
+const isSignUp = ref(false)
+const isLoading = ref(false)
+const errorMessage = ref('')
 
+// ログイン・新規登録の切り替え
+const toggleMode = () => {
+  if (isLoading.value) return
+
+  isSignUp.value = !isSignUp.value
+  errorMessage.value = ''
+}
+
+// ログイン・新規アカウント登録
 const handleSubmit = async () => {
-  if (isLoading.value) return;
+  if (isLoading.value) return
 
-  errorMessage.value = '';
-  isLoading.value = true;
+  errorMessage.value = ''
+  isLoading.value = true
 
   try {
-    let res;
+    let res
 
     if (isSignUp.value) {
       // 新規アカウント登録
       res = await createUserWithEmailAndPassword(
         auth,
-        email.value,
+        email.value.trim(),
         password.value
-      );
+      )
     } else {
-      // ログイン
+      // 既存アカウントでログイン
       res = await signInWithEmailAndPassword(
         auth,
-        email.value,
+        email.value.trim(),
         password.value
-      );
+      )
     }
 
-    // 認証完了の確認は維持するが、返されたIDトークンは変数やログへ残さない。
-    // 実行機能へ渡す認証情報は、将来Vue側の要求時に取得する。拡張へは渡さない。
-    await res.user.getIdToken();
+    // main側の認証確認処理を維持する。
+    // IDトークンを変数やログに残さない。
+    // 実行機能への認証情報は必要時に取得する。
+    // 拡張機能には認証情報を渡さない。
+    await res.user.getIdToken()
 
-    // 認証成功後にホーム画面へ移動
-   await router.replace('/');
   } catch (err) {
-    // Firebaseの生エラーには認証情報が含まれ得るため、consoleへ出さない。
-    // 既知のcodeから選んだ固定の日本語メッセージだけを画面へ表示する。
-    errorMessage.value = getJapaneseErrorMessage(err?.code);
-  } finally {
-    isLoading.value = false;
+    // Firebaseの生エラーには認証情報が
+    // 含まれる可能性があるためログ出力しない。
+    errorMessage.value =
+      getJapaneseErrorMessage(err?.code)
+
+    isLoading.value = false
+    return
   }
-};
+
+  try {
+    // 認証成功後、ルーター側で
+    // プロジェクト登録状況を確認する。
+    await router.replace('/')
+
+  } catch {
+    // 認証失敗と画面遷移失敗を区別する。
+    errorMessage.value =
+      '認証は完了しましたが、画面を移動できませんでした。' +
+      '通信環境を確認して画面を再読み込みしてください。'
+
+  } finally {
+    password.value = ''
+    isLoading.value = false
+  }
+}
 
 // エラーメッセージの日本語化
 const getJapaneseErrorMessage = (code) => {
   switch (code) {
     case 'auth/email-already-in-use':
-      return 'このメールアドレスは既に登録されています。';
+      return 'このメールアドレスは既に登録されています。'
 
     case 'auth/invalid-email':
-      return 'メールアドレスの形式が正しくありません。';
+      return 'メールアドレスの形式が正しくありません。'
 
     case 'auth/weak-password':
-      return 'パスワードは6文字以上で入力してください。';
+      return 'パスワードは6文字以上で入力してください。'
 
     case 'auth/user-not-found':
     case 'auth/wrong-password':
     case 'auth/invalid-credential':
-      return 'メールアドレスまたはパスワードが間違っています。';
+      return 'メールアドレスまたはパスワードが間違っています。'
+
+    case 'auth/network-request-failed':
+      return 'ネットワークに接続できません。通信環境を確認してください。'
+
+    case 'auth/too-many-requests':
+      return '操作回数が多すぎます。時間をおいて再度お試しください。'
 
     default:
-      return '認証エラーが発生しました。';
+      return '認証エラーが発生しました。'
   }
-};
+}
 </script>
 
 <style scoped>
@@ -229,6 +272,11 @@ input:focus-visible {
 .toggle-mode button:hover {
   color: #1d4ed8;
   text-decoration: underline;
+}
+
+.toggle-mode button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .error-msg {

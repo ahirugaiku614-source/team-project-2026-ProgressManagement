@@ -53,6 +53,10 @@ class User(Base):
 # チームテーブル
 class Team(Base):
     __tablename__ = "teams"
+    __table_args__ = (UniqueConstraint("created_by", "request_key", name="uq_team_registration_key"),)
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    request_key = Column(String(36), nullable=True)
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
@@ -78,6 +82,9 @@ class Team(Base):
 
 class Project(Base):
     __tablename__ = "projects"
+    __table_args__ = (UniqueConstraint("team_id", "created_by", "request_key", name="uq_project_registration_key"),)
+
+    request_key = Column(String(36), nullable=True)
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
