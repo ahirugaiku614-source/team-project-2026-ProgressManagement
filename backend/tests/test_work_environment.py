@@ -151,7 +151,9 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/editor-gateway/'+b.workspace_id,headers=headers).status_code,503)
 
     def test_default_runtime_rejects_prepare_and_access(self):
-        self.main.app.dependency_overrides[get_work_environment]=lambda:WorkEnvironment(self.service)
+        from app.task_review import TaskReviewService
+        denied=TaskReviewService(self.db,session_factory=self.git.session)
+        self.main.app.dependency_overrides[get_work_environment]=lambda:WorkEnvironment(denied)
         self.assertFalse(self.request('GET','/environment').json()['prepare_enabled'])
         self.assertEqual(self.request('POST','/environment',{'request_id':str(uuid4())}).status_code,503)
 

@@ -26,11 +26,13 @@ class UDSServer:
     正常終了でもsocketは残す。異常終了後の削除は管理者が同一性を確認して別途承認する。
     """
     def __init__(self, endpoint, handler, allowed_uid, allowed_gid, *, enabled=False,
-                 timeout=5.0, monotonic=time.monotonic):
+                 timeout=5.0, monotonic=time.monotonic, max_request=MAX_REQUEST):
         if type(allowed_uid) is not int or type(allowed_gid) is not int or min(allowed_uid,allowed_gid)<=0: reject()
         if type(timeout) not in (int,float) or not 0<timeout<=10: reject()
         self.endpoint=endpoint; self.handler=handler; self.uid=allowed_uid; self.gid=allowed_gid
         self.enabled=enabled; self.timeout=timeout; self.monotonic=monotonic; self.listener=None
+        if type(max_request) is not int or not 0<max_request<=MAX_RESPONSE:reject()
+        self.max_request=max_request
 
     def start(self):
         if self.enabled is not True or sys.platform!='linux': reject()
@@ -65,7 +67,7 @@ class UDSServer:
             _,uid,gid=struct.unpack('3i',connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
             if (uid,gid)!=(self.uid,self.gid): reject()
             header=read(4); size=int.from_bytes(header,'big')
-            if not 0<size<=MAX_REQUEST: reject()
+            if not 0<size<=self.max_request: reject()
             frame=header+read(size)
             # クライアントは送信方向をshutdownして、一要求だけであることを示す。
             budget()

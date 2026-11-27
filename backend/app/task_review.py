@@ -16,6 +16,7 @@ from app.review_git import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_PATCH
 from app.change_request_reviews import verified_object, verify_snapshot
 from app.change_requests import reference_key, row_manifest
 from app.project_storage import StorageConflict
+from app.workspace_scope import WorkspaceInitialization
 
 POLICY_VERSION = 1
 
@@ -109,15 +110,6 @@ class TaskReviewGit(SubmissionReviewGit):
                     self.write_once(bases,basis_id,(commit+'\n').encode())
 
 
-@dataclass(frozen=True)
-class WorkspaceInitialization:
-    basis_id: str
-    target: object
-    base_commit: str
-    workspace_id: str
-    source_generation: int
-
-
 class DeniedWorkspaces:
     """実workspaceの初期化・検証は未接続。OIDの後付けや既存領域上書きは行わない。"""
     def initialize(self,*args):
@@ -154,17 +146,22 @@ class TaskReviewService:
         self.workspaces=workspaces if workspaces is not None else DeniedWorkspaces()
         self.session_factory=session_factory or (lambda p:TaskReviewGit(storage).session(p))
 
-    def start(self,actor,team_id,project_id,task_id):
+    def start(self,actor,team_id,project_id,task_id,*,initialization_request_id=None,before_initialize=None):
         with self.session_factory(project_id) as git:
             target=lock_target(self.db,actor,team_id,project_id,task_id)
             if self.db.get(models.Task,task_id).status == models.TaskStatus.DONE:
                 raise TaskReviewError('TASK_FINISHED')
             base=git.main_commit();baseline_files=checked_files(git,base)
             basis_id=str(uuid4())
+            if before_initialize is not None:
+                before_initialize(basis_id,base)
+                if lock_target(self.db,actor,team_id,project_id,task_id)!=target:conflict()
             initialize_snapshot = getattr(self.workspaces, 'initialize_from_snapshot', None)
             # 同じGitロック内で検証した全体treeを渡す。初期化側からGitロックを
             # 再取得せず、提出時のmainや利用者指定OIDを初期化元にしない。
-            proof=(initialize_snapshot(target,base,basis_id,baseline_files) if initialize_snapshot
+            initialize_request=getattr(self.workspaces,'initialize_for_request',None)
+            proof=(initialize_request(target,base,basis_id,baseline_files,initialization_request_id or basis_id)
+                   if initialize_request else initialize_snapshot(target,base,basis_id,baseline_files) if initialize_snapshot
                    else self.workspaces.initialize(target,base,basis_id))
             if (not isinstance(proof,WorkspaceInitialization) or proof.basis_id!=basis_id
                     or proof.target!=target or proof.base_commit!=base

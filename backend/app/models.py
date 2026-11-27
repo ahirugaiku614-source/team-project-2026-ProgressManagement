@@ -422,6 +422,7 @@ class WorkEnvironmentOperation(Base):
     previous_basis_id = Column(String(36), nullable=True)
     editing_session_id = Column(String(36), nullable=True)
     result_basis_id = Column(String(36), nullable=True)
+    base_commit = Column(String(40), nullable=True)
     state = Column(String(24), nullable=False)
 
 

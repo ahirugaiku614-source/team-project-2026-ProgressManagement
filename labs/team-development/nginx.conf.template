@@ -35,6 +35,8 @@ http {
       proxy_set_header Cookie $http_cookie;
     }
     location /code-server/${WORKSPACE_A_ID}/ {
+      error_page 418 = @member_a_socket;
+      if ($http_upgrade = websocket) { return 418; }
       auth_request /_editor_a_auth;
       proxy_pass http://member-a:8080/;
       proxy_http_version 1.1;
@@ -42,8 +44,11 @@ http {
       proxy_set_header Upgrade $http_upgrade;
       proxy_set_header Connection $connection_upgrade;
       proxy_read_timeout 60s;
+      proxy_cookie_path / /code-server/${WORKSPACE_A_ID}/;
     }
     location /code-server/${WORKSPACE_B_ID}/ {
+      error_page 418 = @member_b_socket;
+      if ($http_upgrade = websocket) { return 418; }
       auth_request /_editor_b_auth;
       proxy_pass http://member-b:8080/;
       proxy_http_version 1.1;
@@ -51,6 +56,23 @@ http {
       proxy_set_header Upgrade $http_upgrade;
       proxy_set_header Connection $connection_upgrade;
       proxy_read_timeout 60s;
+      proxy_cookie_path / /code-server/${WORKSPACE_B_ID}/;
+    }
+    # WebSocketは新規接続だけのauth_requestで終わらせず、専用gatewayへ渡す。
+    # gateway自身が最初と継続中の両方でFastAPIを検証する。
+    location @member_a_socket {
+      proxy_pass http://session-gateway:8090;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_set_header Origin $http_origin;
+    }
+    location @member_b_socket {
+      proxy_pass http://session-gateway:8090;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_set_header Origin $http_origin;
     }
     location /code-server/ { return 403; }
   }

@@ -100,11 +100,11 @@ class WorkEnvironment:
         # statusは初期化・失効・セッション作成を実行しない。
         connected = not isinstance(self.sessions.authority, DeniedAuthority)
         from app.task_review import DeniedWorkspaces
-        ready = connected and not isinstance(self.service.workspaces, DeniedWorkspaces)
-        return {'state': 'CONFIGURED' if ready else 'UNAVAILABLE', 'launch_enabled': ready and self.editor_gateway,
+        ready = not isinstance(self.service.workspaces, DeniedWorkspaces)
+        return {'state': 'CONFIGURED' if ready else 'UNAVAILABLE', 'launch_enabled': ready and connected and self.editor_gateway,
                 'prepare_enabled': ready,
                 'session_verification_available': connected, 'editor_url': None,
-                'reason': None if ready else 'EDIT_SESSION_UNVERIFIED'}
+                'reason': None if ready and connected else 'EDIT_SESSION_UNVERIFIED'}
 
     def prepare(self, actor, team, project, task, request_id, previous=None, session_id=None):
         db = self.service.db
@@ -147,7 +147,16 @@ class WorkEnvironment:
             raise TaskReviewError('ENVIRONMENT_REQUEST_CONFLICT') from None
         operation_id = operation.id
         try:
-            basis = self.service.start(actor, team, project, task)
+            def bind_initialization(basis_id,base):
+                # RPC前にrequest・基準・basis IDを永続結合する。応答を失っても
+                # 読取り照会で同じ受付を特定でき、別の初期化を推測で開始しない。
+                changed=db.query(models.WorkEnvironmentOperation).filter_by(id=operation_id,
+                    state='PROCESSING',result_basis_id=None).update(
+                        {'result_basis_id':basis_id,'base_commit':base},synchronize_session=False)
+                if changed!=1:raise ProviderUnavailable('Initialization admission changed')
+                db.commit()
+            basis = self.service.start(actor, team, project, task,
+                initialization_request_id=request_id,before_initialize=bind_initialization)
             if old is not None:self.service.end(actor, old.id, 'SUPERSEDED')
             operation = db.get(models.WorkEnvironmentOperation, operation_id, populate_existing=True)
             operation.result_basis_id = basis.id
@@ -163,3 +172,15 @@ class WorkEnvironment:
     def operation_public(row):
         return {'request_id': row.request_id, 'state': row.state, 'basis_id': row.result_basis_id,
                 'outcome': 'RECORDED', 'previous_basis_id': row.previous_basis_id}
+
+    def inspect_operation(self,actor,row):
+        target=lock_target(self.service.db,actor,row.team_id,row.project_id,row.task_id)
+        if row.member_id!=actor.id:raise ProviderUnavailable('Environment lookup denied')
+        result=self.operation_public(row)
+        inspect=getattr(self.service.workspaces,'lookup_operation',None)
+        if inspect is not None and row.result_basis_id and row.base_commit:
+            # 読取り照会だけを行う。証拠がCOMPLETEでもDB確認済みへ自動遷移しない。
+            evidence=inspect(row,target)
+            result['initialization_state']=evidence.get('state','UNKNOWN')
+        else:result['initialization_state']='UNKNOWN'
+        return result

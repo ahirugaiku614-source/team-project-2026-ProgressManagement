@@ -1,0 +1,104 @@
+# Stage 10-Bで別途承認されるまで実行しない。base compose.yamlへの追加設定。
+# 実editor authorityは有効化しない。初期化・gatewayの隔離合成検証用。
+x-manager: &manager
+  profiles: [stage10-isolated]
+  image: ${TEAM_BACKEND_IMAGE:?Stage10Aコードを含むdigest固定image}
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 64
+  mem_limit: 512m
+  cpus: 1.0
+  network_mode: none
+  tmpfs: [/tmp:rw,noexec,nosuid,nodev,size=32m]
+services:
+  backend:
+    command: [uvicorn, app.stage10_asgi:app, --host, "0.0.0.0", --port, "8000", --no-access-log]
+    # socketの所有者は各ワーカーUID。管理APIだけに接続用groupを追加する。
+    # SO_PEERCREDで照合するprimary UID/GIDは既存manager設定のままにする。
+    group_add: ["${MEMBER_A_GID:?A専用GID}", "${MEMBER_B_GID:?B専用GID}"]
+    environment:
+      WORKSPACE_BACKEND_SETTINGS_FILE: /run/workspace-config/settings.json
+    volumes:
+      - type: bind
+        source: ${WORKSPACE_BACKEND_SETTINGS:?管理UID所有0700のsettings.json格納ディレクトリ}
+        target: /run/workspace-config
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${WORKSPACE_BACKEND_KEYS:?管理UID所有の0600鍵ファイルを含む0700領域}
+        target: /run/workspace-keys
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${WORKSPACE_A_SOCKET_DIR:?新規A用UDS領域}
+        target: /run/workspace-a
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${WORKSPACE_B_SOCKET_DIR:?新規B用UDS領域}
+        target: /run/workspace-b
+        bind: {create_host_path: false}
+  workspace-a:
+    <<: *manager
+    user: "${MEMBER_A_UID:?A専用非root UID}:${MEMBER_A_GID:?A専用GID}"
+    command: [python, -B, -m, app.workspace_bootstrap, --settings, /run/workspace-config/settings.json, --approved-isolated]
+    volumes:
+      - type: bind
+        source: ${WORKSPACE_A_SETTINGS:?AのUID所有0700のsettings.json格納ディレクトリ}
+        target: /run/workspace-config
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${WORKSPACE_A_ROOT:?メンバーA専用の新規0700領域}
+        target: /managed
+        bind: {create_host_path: false, propagation: rprivate}
+      - type: bind
+        source: ${WORKSPACE_A_KEYS:?Aワーカー専用の鍵領域}
+        target: /run/keys
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${WORKSPACE_A_SOCKET_DIR:?新規A用UDS領域}
+        target: /run/workspace
+        bind: {create_host_path: false}
+  workspace-b:
+    <<: *manager
+    user: "${MEMBER_B_UID:?B専用非root UID}:${MEMBER_B_GID:?B専用GID}"
+    command: [python, -B, -m, app.workspace_bootstrap, --settings, /run/workspace-config/settings.json, --approved-isolated]
+    volumes:
+      - type: bind
+        source: ${WORKSPACE_B_SETTINGS:?BのUID所有0700のsettings.json格納ディレクトリ}
+        target: /run/workspace-config
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${WORKSPACE_B_ROOT:?メンバーB専用の新規0700領域}
+        target: /managed
+        bind: {create_host_path: false, propagation: rprivate}
+      - type: bind
+        source: ${WORKSPACE_B_KEYS:?Bワーカー専用の鍵領域}
+        target: /run/keys
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${WORKSPACE_B_SOCKET_DIR:?新規B用UDS領域}
+        target: /run/workspace
+        bind: {create_host_path: false}
+  session-gateway:
+    profiles: [stage10-isolated]
+    image: ${TEAM_BACKEND_IMAGE:?digest固定image}
+    user: "${GATEWAY_UID:?非rootUID}:${GATEWAY_GID:?専用GID}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+    networks: [member-a, member-b, manager]
+    command: [python, -B, -m, app.editor_socket_gateway, --settings, /run/workspace-config/settings.json, --approved-isolated]
+    volumes:
+      - type: bind
+        source: ${EDITOR_SOCKET_GATEWAY_SETTINGS:?gatewayのUID所有0700のsettings.json格納ディレクトリ}
+        target: /run/workspace-config
+        read_only: true
+        bind: {create_host_path: false}

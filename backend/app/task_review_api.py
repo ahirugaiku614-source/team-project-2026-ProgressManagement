@@ -167,7 +167,7 @@ def create_task_review_router(member_resolver):
         lock_target(db, user, team_id, project_id, task_id)
         row = db.query(models.WorkEnvironmentOperation).filter_by(member_id=user.id,
             team_id=team_id, project_id=project_id, task_id=task_id, request_id=str(request_id)).first()
-        return runtime.operation_public(row) if row else {'outcome': 'UNKNOWN', 'state': 'UNKNOWN', 'request_id': str(request_id), 'basis_id': None}
+        return runtime.inspect_operation(user,row) if row else {'outcome': 'UNKNOWN', 'state': 'UNKNOWN', 'request_id': str(request_id), 'basis_id': None}
 
     def scope(service, user, team, project, task, basis_id=None):
         require_lifecycle(service.db)

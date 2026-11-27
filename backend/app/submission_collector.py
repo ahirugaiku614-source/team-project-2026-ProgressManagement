@@ -9,6 +9,8 @@ from app.submission_folders import ManagedTaskRoot
 from app.submission_rpc import CollectorRPCServer, RPCKeys, reject
 from app.submission_ledger import SQLiteReplayLedger, private_storage
 from app.submission_server import UDSServer
+from app.managed_process import ManagedProcess
+from dataclasses import asdict
 
 
 class FixedRootCollector:
@@ -33,6 +35,22 @@ class FixedRootCollector:
             root=ManagedTaskRoot(target.team_id,target.project_id,target.student_id,fd,
                                  info.st_dev,info.st_ino,self.owner_uid)
             return collect_task(SimpleNamespace(target=target),root,ops)
+
+
+class IsolatedRootCollector:
+    """認可・永続受付の後だけ子を起動し、完成したフレームだけを親へ返す。"""
+    def __init__(self, root, target, owner_uid, *, runner=None):
+        fixed=FixedRootCollector(root,target,owner_uid)
+        self.root,self.target,self.uid=str(fixed.path),target,owner_uid
+        self.runner=runner or ManagedProcess(enabled=True)
+
+    def __call__(self,target,session):
+        from app.submission_rpc import decode_files
+        if target!=self.target:reject()
+        result=self.runner.run({'action':'COLLECT','root':self.root,'target':asdict(target),
+            'owner_uid':self.uid,'parent_pid':os.getpid()})
+        if not isinstance(result,dict) or set(result)!={'files'}:reject()
+        return decode_files(result['files'])
 
 
 def configured_server(*, endpoint, client_uid, client_gid, ledger_path, request_key_file,
@@ -60,6 +78,6 @@ def configured_server(*, endpoint, client_uid, client_gid, ledger_path, request_
         finally:os.close(fd)
     ledger=SQLiteReplayLedger(ledger_path)
     if authorize.key in keys:reject()  # 通信認証と学生認可で同じ鍵を使わない。
-    source=FixedRootCollector(root,target,owner_uid)
+    source=IsolatedRootCollector(root,target,owner_uid)
     handler=CollectorRPCServer(RPCKeys(*keys),ledger,{target:(generation,source)},authorize)
     return UDSServer(endpoint,handler,client_uid,client_gid,enabled=True)

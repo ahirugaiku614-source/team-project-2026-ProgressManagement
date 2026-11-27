@@ -32,7 +32,7 @@ class UnixSocketTransport:
     Windows単体試験ではsocketを偽物へ差し替える。enabled=Falseの既定値では
     lstatもsocket作成も行わない。本クラスの実接続有効化は別途承認を要する。
     """
-    def __init__(self, endpoint, expected_peer_uid, *, enabled=False, monotonic=time.monotonic):
+    def __init__(self, endpoint, expected_peer_uid, *, enabled=False, monotonic=time.monotonic, max_request=16384):
         if (type(endpoint) is not str or not endpoint.startswith('/') or '\x00' in endpoint
                 or '..' in PurePosixPath(endpoint).parts or str(PurePosixPath(endpoint)) != endpoint
                 or len(endpoint.encode('utf-8')) > 107
@@ -40,10 +40,12 @@ class UnixSocketTransport:
                 or type(enabled) is not bool): reject()
         self.endpoint, self.peer_uid = endpoint, expected_peer_uid
         self.enabled, self.monotonic = enabled, monotonic
+        if type(max_request) is not int or not 0<max_request<=15*1024*1024:reject()
+        self.max_request=max_request
 
     def exchange(self, frame, *, timeout, max_response):
         if not self.enabled or sys.platform != 'linux': reject()
-        if (not isinstance(frame, bytes) or not 4 < len(frame) <= 16388
+        if (not isinstance(frame, bytes) or not 4 < len(frame) <= self.max_request+4
                 or type(timeout) not in (int, float) or not 0 < timeout <= 10
                 or type(max_response) is not int or not 4 < max_response <= 15 * 1024 * 1024 + 4): reject()
         deadline = self.monotonic() + timeout

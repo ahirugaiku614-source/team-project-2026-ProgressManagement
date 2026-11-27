@@ -14,9 +14,9 @@ import sys
 import time
 from uuid import UUID, uuid4
 
-from app.task_review import WorkspaceInitialization
+from app.workspace_scope import WorkspaceInitialization
 from app.submission_provider import ProviderUnavailable
-from app.submission_targets import normalize_folder_path
+from app.review_git import valid_path
 
 
 class MappedWorkspaces:
@@ -37,6 +37,11 @@ class MappedWorkspaces:
     def initialize_from_snapshot(self, target, base, basis_id, files):
         return self.adapter(target.student_id, target.project_id).initialize_from_snapshot(target, base, basis_id, files)
 
+    def initialize_for_request(self,target,base,basis_id,files,request_id):
+        adapter=self.adapter(target.student_id,target.project_id)
+        initialize=getattr(adapter,'initialize_for_request',None)
+        return initialize(target,base,basis_id,files,request_id) if initialize else adapter.initialize_from_snapshot(target,base,basis_id,files)
+
     def verify(self, proof):
         return self.adapter(proof.target.student_id, proof.target.project_id).verify(proof)
 
@@ -45,6 +50,11 @@ class MappedWorkspaces:
 
     def unchanged(self, basis):
         return self.adapter(basis.member_id, basis.project_id).unchanged(basis)
+
+    def lookup_operation(self,operation,target):
+        adapter=self.adapter(target.student_id,target.project_id)
+        inspect=getattr(adapter,'lookup_operation',None)
+        return inspect(operation,target) if inspect else {'state':'UNKNOWN'}
 
 
 class LinuxWorkspaces:
@@ -105,7 +115,7 @@ class LinuxWorkspaces:
             work = os.open('w-' + workspace_id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
             try:
                 for path, (mode, body) in sorted(files.items()):
-                    normalize_folder_path(path)
+                    valid_path(path)
                     if mode not in ('100644', '100755') or len(body) > 1024 * 1024:
                         raise ProviderUnavailable('Unsupported workspace entry')
                     parent = os.dup(work)
@@ -195,7 +205,7 @@ class LinuxWorkspaces:
                         raise ProviderUnavailable('Workspace inspection limit exceeded')
                     names.append(entry.name)
             for name in sorted(names):
-                path = prefix + name;normalize_folder_path(path)
+                path = prefix + name;valid_path(path)
                 fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
                 try:
                     before = os.fstat(fd)
