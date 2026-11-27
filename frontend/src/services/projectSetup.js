@@ -1,87 +1,100 @@
+import { auth } from '../firebase'
+import { apiRequest } from './api'
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+// 認証状態や登録状況の変更を検出するための世代番号
+let statusVersion = 0
 
-// プロジェクト確認結果の一時保存
-let cachedUserUid = null;
-let cachedProjectStatus = null;
+// 確認処理が現在も有効か確認する
+function assertCurrentUser(user, version) {
+  if (
+    auth.currentUser?.uid !== user.uid ||
+    version !== statusVersion
+  ) {
+    throw new Error('ログイン状態または登録状況が変更されました。')
+  }
+}
 
-// API通信
-async function apiRequest(url, token, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${url}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...options.headers
-    }
-  });
-
-  if (!response.ok) {
-    let message = 'サーバーとの通信に失敗しました。';
-
-    try {
-      const data = await response.json();
-      message = data.detail || message;
-    } catch {
-      // エラー本文がJSONでない場合
-    }
-
-    throw new Error(message);
+// APIから取得した一覧データを確認する
+function validateList(data, label) {
+  if (!Array.isArray(data)) {
+    throw new Error(`${label}の取得データが不正です。`)
   }
 
-  if (response.status === 204) {
-    return null;
+  for (const item of data) {
+    if (!item || !Number.isSafeInteger(item.id) || item.id <= 0) {
+      throw new Error(`${label}のIDが不正です。`)
+    }
   }
 
-  return response.json();
+  return data
+}
+
+// ログインユーザーの所属チームを取得する
+export async function getUserTeams(user = auth.currentUser) {
+  if (!user) {
+    throw new Error('ログイン情報を確認できません。')
+  }
+
+  // PostgreSQLにユーザー情報を同期
+  await apiRequest('/api/me', {}, user)
+
+  const teams = await apiRequest('/api/teams', {}, user)
+
+  return validateList(teams, 'チーム一覧')
+}
+
+// 指定したチームのプロジェクト一覧を取得する
+export async function getTeamProjects(
+  teamId,
+  user = auth.currentUser
+) {
+  if (!Number.isSafeInteger(teamId) || teamId <= 0) {
+    throw new Error('チームIDが不正です。')
+  }
+
+  const projects = await apiRequest(
+    `/api/teams/${teamId}/projects`,
+    {},
+    user
+  )
+
+  return validateList(projects, 'プロジェクト一覧')
 }
 
 // ログインユーザーにプロジェクトが登録されているか確認
 export async function checkUserHasProjects(user) {
   if (!user) {
-    throw new Error('ログイン情報を確認できません。');
+    throw new Error('ログイン情報を確認できません。')
   }
 
-  // 同じユーザーの確認結果があれば再利用
-  if (
-    cachedUserUid === user.uid &&
-    cachedProjectStatus !== null
-  ) {
-    return cachedProjectStatus;
-  }
+  const version = statusVersion
 
-  const token = await user.getIdToken();
-
-  // PostgreSQLにユーザー情報を同期
-  await apiRequest('/api/me', token);
+  assertCurrentUser(user, version)
 
   // 所属チーム一覧を取得
-  const teams = await apiRequest('/api/teams', token);
+  const teams = await getUserTeams(user)
 
-  let hasProjects = false;
+  assertCurrentUser(user, version)
 
   // 各チームのプロジェクトを確認
   for (const team of teams) {
-    const projects = await apiRequest(
-      `/api/teams/${team.id}/projects`,
-      token
-    );
+    const projects = await getTeamProjects(team.id, user)
+
+    assertCurrentUser(user, version)
 
     if (projects.length > 0) {
-      hasProjects = true;
-      break;
+      return true
     }
   }
 
-  cachedUserUid = user.uid;
-  cachedProjectStatus = hasProjects;
+  assertCurrentUser(user, version)
 
-  return hasProjects;
+  // 正常に確認でき、プロジェクトが存在しない場合のみfalse
+  return false
 }
 
-// 登録後に確認結果をリセット
+// 既存の呼び出し元との互換性を維持する
+// 古い確認処理の結果を無効化する
 export function clearProjectStatusCache() {
-  cachedUserUid = null;
-  cachedProjectStatus = null;
+  statusVersion += 1
 }

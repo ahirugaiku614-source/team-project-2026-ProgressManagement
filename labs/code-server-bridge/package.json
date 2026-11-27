@@ -1,0 +1,20 @@
+{
+  "name": "team-progress-real-editor-probe",
+  "displayName": "Team Progress：未保存本文の検証専用プローブ",
+  "description": "独立したLinux検証環境だけで未保存本文をメモリ内取得する。保存・送信・実行はしない。",
+  "version": "0.0.1",
+  "publisher": "team-progress-lab",
+  "private": true,
+  "engines": { "vscode": "^1.90.0" },
+  "extensionKind": ["workspace"],
+  "main": "./probe/extension.cjs",
+  "activationEvents": ["onCommand:teamProgressProbe.capture"],
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": false },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [{ "command": "teamProgressProbe.capture", "title": "検証専用：未保存本文をメモリ内で取得" }]
+  },
+  "files": ["capture.mjs", "probe/extension.cjs", "probe/controller.mjs", "probe/file-scope.mjs", "README.md"]
+}

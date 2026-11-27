@@ -13,6 +13,7 @@
           required
           autocomplete="email"
           placeholder="example@test.com"
+          :disabled="isLoading"
         />
       </div>
 
@@ -25,10 +26,15 @@
           required
           :autocomplete="isSignUp ? 'new-password' : 'current-password'"
           placeholder="6文字以上"
+          :disabled="isLoading"
         />
       </div>
 
-      <button type="submit" class="submit-btn" :disabled="isLoading">
+      <button
+        type="submit"
+        class="submit-btn"
+        :disabled="isLoading"
+      >
         {{
           isLoading
             ? '処理中...'
@@ -42,7 +48,7 @@
     <div class="toggle-mode">
       <button
         type="button"
-        @click="isSignUp = !isSignUp"
+        @click="toggleMode"
         :disabled="isLoading"
       >
         {{
@@ -77,6 +83,15 @@ const isSignUp = ref(false)
 const isLoading = ref(false)
 const errorMessage = ref('')
 
+// ログイン・新規登録の切り替え
+const toggleMode = () => {
+  if (isLoading.value) return
+
+  isSignUp.value = !isSignUp.value
+  errorMessage.value = ''
+}
+
+// ログイン・新規アカウント登録
 const handleSubmit = async () => {
   if (isLoading.value) return
 
@@ -84,28 +99,53 @@ const handleSubmit = async () => {
   isLoading.value = true
 
   try {
+    let res
+
     if (isSignUp.value) {
       // 新規アカウント登録
-      await createUserWithEmailAndPassword(
+      res = await createUserWithEmailAndPassword(
         auth,
-        email.value,
+        email.value.trim(),
         password.value
       )
     } else {
-      // ログイン
-      await signInWithEmailAndPassword(
+      // 既存アカウントでログイン
+      res = await signInWithEmailAndPassword(
         auth,
-        email.value,
+        email.value.trim(),
         password.value
       )
     }
 
-    // 認証成功後、ルーターがプロジェクト登録状況を確認する
-    await router.replace('/')
+    // main側の認証確認処理を維持する。
+    // IDトークンを変数やログに残さない。
+    // 実行機能への認証情報は必要時に取得する。
+    // 拡張機能には認証情報を渡さない。
+    await res.user.getIdToken()
+
   } catch (err) {
-    console.error(err)
-    errorMessage.value = getJapaneseErrorMessage(err.code)
+    // Firebaseの生エラーには認証情報が
+    // 含まれる可能性があるためログ出力しない。
+    errorMessage.value =
+      getJapaneseErrorMessage(err?.code)
+
+    isLoading.value = false
+    return
+  }
+
+  try {
+    // 認証成功後、ルーター側で
+    // プロジェクト登録状況を確認する。
+    await router.replace('/')
+
+  } catch {
+    // 認証失敗と画面遷移失敗を区別する。
+    errorMessage.value =
+      '認証は完了しましたが、画面を移動できませんでした。' +
+      '通信環境を確認して画面を再読み込みしてください。'
+
   } finally {
+    password.value = ''
     isLoading.value = false
   }
 }
@@ -129,6 +169,9 @@ const getJapaneseErrorMessage = (code) => {
 
     case 'auth/network-request-failed':
       return 'ネットワークに接続できません。通信環境を確認してください。'
+
+    case 'auth/too-many-requests':
+      return '操作回数が多すぎます。時間をおいて再度お試しください。'
 
     default:
       return '認証エラーが発生しました。'

@@ -332,9 +332,9 @@ async function handleLogout() {
     // ログイン画面へ移動
     await router.replace("/login");
 
-  } catch (error) {
+  } catch {
 
-    console.error("ログアウトエラー:", error);
+    // 認証の生エラーをログへ出さず、固定メッセージだけを利用者に表示する。
 
     window.alert(
       "ログアウトに失敗しました。もう一度お試しください。"

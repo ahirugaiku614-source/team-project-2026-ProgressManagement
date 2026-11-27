@@ -10,7 +10,7 @@ import app.models as models
 import app.schemas as schemas
 from typing import List
 import secrets
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from app.change_requests import submit_change_request, change_request_diff
 from app.change_request_reviews import decide_change_request, ReviewForbidden, ReviewNotFound
 from app.change_request_integration import integrate_change_request
@@ -196,33 +196,45 @@ def create_team(
             detail="User not found. Please access /api/me first."
         )
 
-    # チームを作成
-    new_team = models.Team(
-        name=team_in.name,
-        description=team_in.description,
-        invite_code=secrets.token_urlsafe(16),
-    )
+    user_id = user.id
+    key = str(team_in.request_key) if team_in.request_key else None
 
+    def replay():
+        if key is None:
+            return None
+        team = db.query(models.Team).filter(
+            models.Team.created_by == user_id,
+            models.Team.request_key == key,
+        ).first()
+        if team is None:
+            return None
+        if not db.query(models.TeamMember).filter_by(team_id=team.id, user_id=user_id).first():
+            raise HTTPException(status_code=403, detail="Team membership required")
+        if team.name != team_in.name or team.description != team_in.description:
+            raise HTTPException(status_code=409, detail="Request key already used with different input")
+        return team
+
+    existing = replay()
+    if existing is not None:
+        return existing
+    new_team = models.Team(name=team_in.name, description=team_in.description,
+                           invite_code=secrets.token_urlsafe(16), created_by=user_id, request_key=key)
     try:
         db.add(new_team)
-        db.flush()  # INSERTを実行してチームIDを取得
-
-        # 作成者をオーナーとして登録
-        new_member = models.TeamMember(
-            team_id=new_team.id,
-            user_id=user.id,
-            role="owner",
-        )
-
-        db.add(new_member)
+        db.flush()
+        db.add(models.TeamMember(team_id=new_team.id, user_id=user_id, role="owner"))
         db.commit()
-        db.refresh(new_team)
-
-        return new_team
-
+    except IntegrityError:
+        db.rollback()
+        existing = replay()
+        if existing is not None:
+            return existing
+        raise
     except Exception:
         db.rollback()
         raise
+    db.refresh(new_team)
+    return new_team
 
 #  所属チーム一覧取得 (GET /api/teams) 
 @app.get("/api/teams", response_model=List[schemas.TeamResponse])
@@ -306,29 +318,21 @@ def join_team(
     )
 
     if existing_member:
-        raise HTTPException(
-            status_code=409,
-            detail="You are already a member of this team."
-        )
-
-    # チームメンバーとして登録
-    new_member = models.TeamMember(
-        team_id=team.id,
-        user_id=user.id,
-        role="member",
-    )
-
-    try:
-        db.add(new_member)
-        db.commit()
-        db.refresh(team)
-
         return team
 
+    team_id, user_id = team.id, user.id
+    try:
+        db.add(models.TeamMember(team_id=team_id, user_id=user_id, role="member"))
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if not db.query(models.TeamMember).filter_by(team_id=team_id, user_id=user_id).first():
+            raise
     except Exception:
         db.rollback()
         raise
-
+    db.refresh(team)
+    return team
 
 
 # --- チームメンバー一覧取得 (GET /api/teams/{team_id}/members) ---
@@ -431,19 +435,37 @@ def create_team_project(
     user: models.User = Depends(get_project_team_member),
     db: Session = Depends(get_db),
 ):
-    new_project = models.Project(
-        name=project_in.name,
-        description=project_in.description,
-        team_id=team_id,
-        created_by=user.id,
-    )
+    user_id = user.id
+    key = str(project_in.request_key) if project_in.request_key else None
+
+    def replay():
+        if key is None:
+            return None
+        project = db.query(models.Project).filter_by(
+            team_id=team_id, created_by=user_id, request_key=key
+        ).first()
+        if project is not None and (project.name != project_in.name or project.description != project_in.description):
+            raise HTTPException(status_code=409, detail="Request key already used with different input")
+        return project
+
+    existing = replay()
+    if existing is not None:
+        return existing
+    new_project = models.Project(name=project_in.name, description=project_in.description,
+                                 team_id=team_id, created_by=user_id, request_key=key)
     try:
         db.add(new_project)
         db.commit()
-        db.refresh(new_project)
+    except IntegrityError:
+        db.rollback()
+        existing = replay()
+        if existing is not None:
+            return existing
+        raise
     except Exception:
         db.rollback()
         raise
+    db.refresh(new_project)
     return new_project
 
 
@@ -480,6 +502,11 @@ def get_accessible_project(
 # 起動・停止・セッション発行は常に拒否し、保存領域や既存code-serverには触れない。
 from app.editor_api import create_editor_router
 app.include_router(create_editor_router(get_project_team_member, get_accessible_project))
+
+# 短時間Python実行は独立したAPIとして登録する。既定workerは未接続で常に503。
+# 既存個人エディタの実行禁止ゲートやDocker設定は変更しない。
+from app.execution_api import create_execution_router
+app.include_router(create_execution_router(get_project_team_member, get_accessible_project))
 
 
 def project_storage_operation(storage, project_id, user_id=None, initialize=False):
