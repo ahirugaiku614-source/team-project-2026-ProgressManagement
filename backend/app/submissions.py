@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import text
 
 from app import models
 from app.submission_targets import resolve_submission_target
@@ -24,6 +25,10 @@ def token_digest(token):
 
 
 def lock_target(db, actor, team_id, project_id, task_id):
+    # Git側の既存期限と区別してDB行ロックの待機も制限する。順序の全面変更は
+    # 行わず、PostgreSQL実証までは実providerを有効にしない。
+    if db.get_bind().dialect.name == 'postgresql':
+        db.execute(text("SET LOCAL lock_timeout = '5s'"))
     # Match Stage 1 project lock order; re-read mutable authorization records.
     db.query(models.Project).filter_by(id=project_id).with_for_update().all()
     db.query(models.TeamMember).filter_by(team_id=team_id, user_id=actor.id).with_for_update().all()

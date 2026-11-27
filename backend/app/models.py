@@ -397,6 +397,44 @@ class WorkReviewPreview(Base):
     expires_at = Column(DateTime, nullable=False)
 
 
+class WorkEditingSession(Base):
+    """管理側が発行する編集セッション。拡張のdirty申告や認証鍵は保存しない。"""
+    __tablename__ = 'work_editing_sessions'
+    __table_args__ = ({'info': {'requires_explicit_migration': True}},)
+    id = Column(String(36), primary_key=True)
+    basis_id = Column(String(36), ForeignKey('work_bases.id', ondelete='RESTRICT'), nullable=False)
+    member_id = Column(Integer, ForeignKey('users.id', ondelete='RESTRICT'), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+
+
+class WorkEnvironmentOperation(Base):
+    """準備・最新版取得の受付証拠。応答不明でも別の環境を自動生成しない。"""
+    __tablename__ = 'work_environment_operations'
+    __table_args__ = (UniqueConstraint('member_id', 'request_id', name='uq_work_environment_request'),
+                      {'info': {'requires_explicit_migration': True}})
+    id = Column(String(36), primary_key=True)
+    request_id = Column(String(36), nullable=False)
+    member_id = Column(Integer, ForeignKey('users.id', ondelete='RESTRICT'), nullable=False)
+    team_id = Column(Integer, nullable=False)
+    project_id = Column(Integer, nullable=False)
+    task_id = Column(Integer, nullable=False)
+    previous_basis_id = Column(String(36), nullable=True)
+    editing_session_id = Column(String(36), nullable=True)
+    result_basis_id = Column(String(36), nullable=True)
+    state = Column(String(24), nullable=False)
+
+
+class WorkEditorAccess(Base):
+    """ブラウザー用の短命なアクセス権。平文cookieはDBへ保存しない。"""
+    __tablename__ = 'work_editor_access'
+    __table_args__ = ({'info': {'requires_explicit_migration': True}},)
+    token_digest = Column(String(64), primary_key=True)
+    session_id = Column(String(36), ForeignKey('work_editing_sessions.id', ondelete='RESTRICT'), nullable=False)
+    workspace_id = Column(String(36), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+
 class WorkWorkspaceRevision(Base):
     """管理側だけが更新する保存元世代。利用者のリクエストから更新しない。"""
     __tablename__ = 'work_workspace_revisions'

@@ -33,6 +33,7 @@ export function createWorkflow({ request, state = initialState(), storage = null
   // 本番の編集セッション取得契約はまだない。テストの明示注入以外では収集を許可しない。
   // セッションIDを手入力する画面や、URLから模擬機能へ切り替える機能は作らない。
   const s = state; s.sessionConnected = !!sessionSource
+  let managedSession = null
   // コンテキストと読取り操作ごとの世代を持ち、遅れた応答による画面の巻戻りを防止する。
   // 書込みは単一ラッチで直列化し、画面切替をサーバー操作の取消しとは解釈しない。
   let epoch = 0, detailEpoch = 0, listEpoch = 0, workEpoch = 0, controller = new AbortController(), mutationLock = false
@@ -51,6 +52,8 @@ export function createWorkflow({ request, state = initialState(), storage = null
   }
   function read(k) { try { const value = storage?.getItem(k) || 'null'; return value.length > 4096 ? { invalid: true } : JSON.parse(value) } catch { return { invalid: true } } }
   function clearWork() {
+    managedSession = null; s.sessionConnected = !!sessionSource
+    s.editorUrl = null
     Object.assign(s, { basis: null, environment: null, candidates: [], selectedDeletes: [], deletionIds: [], preview: null,
       journal: null, result: null, title: '', description: '', previousRequestId: null })
   }
@@ -153,11 +156,80 @@ export function createWorkflow({ request, state = initialState(), storage = null
     })
   }
   function invalidatePreview() { s.preview = null }
+  async function refreshEnvironment() {
+    if (!s.taskId) return
+    const e = epoch
+    try {
+      const environment = await get(taskPath() + '/work-bases/environment')
+      if (e === epoch) s.environment = environment
+    } catch (error) { if (e === epoch) s.error = explain(error) }
+  }
+  async function connectSession() {
+    if (!active()) return
+    const path = workPath()
+    await mutate('SESSION', async e => {
+      const result = await request(path + '/editing-sessions', { method: 'POST', body: {} })
+      if (e !== epoch) return
+      if (!uuid(result.session_id) || !Number.isFinite(serverTime(result.expires_at)) || serverTime(result.expires_at) <= now()) throw new ApiError(502, 'RESPONSE_INVALID')
+      managedSession = result.session_id; s.sessionConnected = true
+      s.message = '管理側で編集セッションを確認しました。提出時にも保存状態を再検証します。'
+    })
+  }
+  async function openEditor() {
+    if (!active() || !managedSession) return
+    await mutate('EDITOR_ACCESS', async e => {
+      const result = await request(workPath() + '/editor-access', { method: 'POST', body: { session_id: managedSession } })
+      if (e !== epoch) return
+      if (!uuid(s.basis?.workspace_id) || result.url !== '/code-server/' + s.basis.workspace_id + '/') throw new ApiError(502, 'RESPONSE_INVALID')
+      s.editorUrl = result.url
+      s.message = '下の接続リンクを開いてください。リンクの権限は短時間で失効します。'
+    })
+  }
+  async function prepareEnvironment(latest = false) {
+    if (!s.taskId || (latest && (!active() || !s.sessionConnected)) || (!latest && s.basis?.state === 'ACTIVE')) return
+    const path = taskPath() + '/work-bases/environment', k = key() + ':environment'
+    const previous = latest ? s.basis.id : null
+    await mutate('ENVIRONMENT', async e => {
+      // 応答不明の準備操作は同じIDで照会する。別IDの自動再実行はしない。
+      if (read(k)) { s.error = '準備操作の記録があります。先に準備結果を確認してください。'; return }
+      const request_id = makeId()
+      save(k, { request_id, previous_basis_id: previous })
+      const result = await request(path, { method: 'POST', body: { request_id,
+        previous_basis_id: previous, session_id: latest ? (sessionSource ? await sessionSource() : managedSession) : null } })
+      if (e !== epoch) return
+      if (result.state !== 'CONFIRMED' || !uuid(result.basis_id)) {
+        s.error = '作業環境の準備結果が不明です。再実行せず結果を確認してください。'; return
+      }
+      save(k, null); await refreshWork()
+      if (e === epoch) s.message = '新しい作業環境を準備しました。以前の環境は上書きしていません。'
+    })
+  }
+  async function checkEnvironment() {
+    const record = read(key() + ':environment'), e = epoch
+    if (!uuid(record?.request_id)) { s.error = '照会する準備操作はありません。'; return }
+    try {
+      const result = await get(taskPath() + '/work-bases/environment/requests/' + record.request_id)
+      if (e !== epoch) return
+      if (result.state === 'CONFIRMED' && uuid(result.basis_id)) {
+        save(key() + ':environment', null); await refreshWork()
+      } else s.error = '準備結果は未確定です。記録なしは未実行の証明になりません。管理者に確認してください。'
+    } catch (error) { if (e === epoch) s.error = explain(error) }
+  }
+  async function checkConfirmation() {
+    if (!uuid(s.preview?.confirmation_id)) return
+    const e = epoch
+    try {
+      const result = await get(workPath() + '/confirmations/' + s.preview.confirmation_id)
+      if (e !== epoch) return
+      if (result.state !== 'AVAILABLE') { s.preview = null; s.error = '変更確認は期限切れ・失効・使用済みです。もう一度確認してください。' }
+      else s.message = '変更確認は有効です。最終提出時にも内容を照合します。'
+    } catch (error) { if (e === epoch) s.error = explain(error) }
+  }
   async function collect() {
-    if (!active() || !sessionSource || s.journal?.request_id || s.journal?.pending) return
+    if (!active() || (!sessionSource && !managedSession) || s.journal?.request_id || s.journal?.pending) return
     const base = taskPath(), path = workPath(), basisId = s.basis.id, k = key()
     await mutate('COLLECTION', async e => {
-      const sessionId = await sessionSource()
+      const sessionId = sessionSource ? await sessionSource() : managedSession
       if (e !== epoch) return
       if (!uuid(sessionId)) throw new ApiError(503, 'EDIT_SESSION_UNVERIFIED')
       const j = { basis_id: basisId, request_id: makeId(), submission_id: null, pending: 'COLLECTION' }
@@ -177,6 +249,19 @@ export function createWorkflow({ request, state = initialState(), storage = null
   function explanationsForCollection(result) { return result.error_code ? explain({ code: result.error_code }) : '収集の結果を確認してください。' }
   async function checkResult() {
     const j = s.journal
+    if (j?.request_id && !j.submission_id && j.basis_id === s.basis?.id) {
+      const e = epoch, k = key()
+      try {
+        const found = await get(workPath() + '/requests/' + j.request_id)
+        if (e !== epoch) return
+        if (found.outcome !== 'RECORDED' || !uuid(found.submission_id)) {
+          s.error = '要求の結果は不明です。記録なしは未実行を意味しません。別IDで再提出しないでください。'; return
+        }
+        j.submission_id = found.submission_id; j.pending = null
+        save(k, j); s.journal = { ...j }; s.result = found
+        s.message = '同じ操作IDに対応する記録を確認しました。再収集・再提出は行っていません。'
+      } catch (error) { if (e === epoch) s.error = explain(error); return }
+    }
     if (!j?.submission_id || j.basis_id !== s.basis?.id) {
       s.error = '結果を照会する収集IDがありません。応答不明の操作を新しいIDでやり直さず、管理者に確認してください。'; return
     }
@@ -278,6 +363,12 @@ export function createWorkflow({ request, state = initialState(), storage = null
       if (e !== epoch || d !== detailEpoch) return
       if (row.id !== positiveId(id) || row.project_id !== s.projectId) throw new ApiError(502, 'RESPONSE_INVALID')
       s.detail = { ...row, integration }; s.reviewUncertain = !!read(reviewKey(row.id))
+      // 既存依頼にタスク結合がない場合も、架空の担当タスクを補わない。
+      try {
+        const context = await get(path + '/task-context')
+        if (e === epoch && d === detailEpoch) Object.assign(s.detail, { task_context: context })
+      } catch { /* 古いAPIとの互換性を保ち、取得不能は「未取得」と表示する。 */ }
+      if (e !== epoch || d !== detailEpoch) return
       // 読取りだけで未確定操作を再送しない。確定状態が観測できた場合だけラッチを解く。
       if (row.review_decision !== 'PENDING' && integration?.status !== 'PREPARED') {
         const pending = read(reviewKey(row.id))
@@ -320,6 +411,7 @@ export function createWorkflow({ request, state = initialState(), storage = null
   }
   function dispose() { reset() }
   return { state: s, bootstrap, selectTeam, selectProject, selectTask, refreshWork, loadReviews, openReview,
+    refreshEnvironment, connectSession, openEditor, prepareEnvironment, checkEnvironment, checkConfirmation,
     start, collect, checkResult, loadCandidates, confirmDeletions, preview, submit, reviewAction,
     invalidatePreview, canPreview, canSubmit, active, nextChange, dispose }
 }

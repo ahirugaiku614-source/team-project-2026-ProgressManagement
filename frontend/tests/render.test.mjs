@@ -53,6 +53,13 @@ test('大量の差分を一度に全表示しない', async () => {
   const html=await render(s)
   assert.equal((html.match(/class="file-diff"/g)||[]).length,40);assert.ok(html.includes('次の40ファイル'));assert.ok(html.length<1000000)
 })
+
+test('提出前の確認差分もHTMLを実行せず描画する', async () => {
+  const s=sample();s.preview={diff:{files:[{path:'src/main.py',patch:'<script>synthetic</script>',binary:false}],truncated:false}}
+  const html=await render(s)
+  assert.ok(html.includes('提出前のコード差分'));assert.ok(html.includes('&lt;script&gt;synthetic'))
+  assert.ok(!html.includes('<script>synthetic</script>'))
+})
 test('失効・除外・変更なし・期限切れを表示する', async () => {
   const s=sample();s.basis.state='REVOKED';s.preview={no_change:true,changes:[],excluded_paths:['src/.env'],expires_at:'2000-01-01T00:00:00',excluded_policy_version:1,main_differs:true}
   const html=await render(s)

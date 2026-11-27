@@ -8,7 +8,7 @@ import { createWorkflow, initialState, positiveId } from '../code-sharing/workfl
 import CodeSharingPanel from './CodeSharingPanel.vue'
 
 const route = useRoute(), router = useRouter(), state = reactive(initialState())
-const request = createApi({ base: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
+const request = createApi({ base: import.meta.env.VITE_API_BASE_URL || '',
   getToken: async () => auth.currentUser ? auth.currentUser.getIdToken() : null })
 let storage = null
 try { storage = window.sessionStorage } catch { /* 認証情報を別の場所へ保存する代替処理は作らない。 */ }

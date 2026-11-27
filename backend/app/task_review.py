@@ -3,6 +3,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 import hashlib
 import json
+import difflib
 from types import SimpleNamespace
 from uuid import UUID, uuid4, uuid5, NAMESPACE_URL
 
@@ -11,7 +12,7 @@ from app.submissions import lock_target
 from app.submission_provider import SubmissionCollection
 from app.submission_git import SubmissionReviewGit, GitSnapshotStore, exact
 from app.submission_collection import excluded
-from app.review_git import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, ReviewLimit
+from app.review_git import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_PATCH_BYTES, ReviewLimit
 from app.change_request_reviews import verified_object, verify_snapshot
 from app.change_requests import reference_key, row_manifest
 from app.project_storage import StorageConflict
@@ -43,6 +44,29 @@ def binding_version(db,task_id):
 
 def eligible(path):
     return not any(excluded(part) for part in path.split('/'))
+
+
+def preview_diff(base, files, changes):
+    """確認段階の差分をメモリ内で作る。Git参照・commitは作成しない。
+
+    対象は認可・収集済みの変更だけであり、除外ファイルは含めない。
+    本文をログへ出さず、UTF-8でないものはバイナリ扱い、応答全体を制限する。
+    """
+    rows=[];remaining=MAX_PATCH_BYTES;truncated=False
+    for change in changes:
+        path=change['path'];before=base.get(path,('',b''))[1];after=files.get(path,('',b''))[1]
+        binary=b'\0' in before or b'\0' in after
+        try:left=before.decode('utf-8');right=after.decode('utf-8')
+        except UnicodeError:binary=True
+        parts=[];cut=False
+        if not binary:
+            for line in difflib.unified_diff(left.splitlines(True),right.splitlines(True),fromfile='a/'+path,tofile='b/'+path):
+                size=len(line.encode('utf-8'))
+                if size>remaining:cut=True;truncated=True;break
+                remaining-=size;parts.append(line)
+        rows.append({'path':path,'change':{'ADDED':'A','MODIFIED':'M','DELETED':'D'}[change['change']],
+                     'binary':binary,'patch':None if binary else ''.join(parts),'truncated':cut})
+    return {'files':rows,'truncated':truncated}
 
 
 def checked_files(git,commit):
@@ -135,9 +159,13 @@ class TaskReviewService:
             target=lock_target(self.db,actor,team_id,project_id,task_id)
             if self.db.get(models.Task,task_id).status == models.TaskStatus.DONE:
                 raise TaskReviewError('TASK_FINISHED')
-            base=git.main_commit();checked_files(git,base)
+            base=git.main_commit();baseline_files=checked_files(git,base)
             basis_id=str(uuid4())
-            proof=self.workspaces.initialize(target,base,basis_id)
+            initialize_snapshot = getattr(self.workspaces, 'initialize_from_snapshot', None)
+            # 同じGitロック内で検証した全体treeを渡す。初期化側からGitロックを
+            # 再取得せず、提出時のmainや利用者指定OIDを初期化元にしない。
+            proof=(initialize_snapshot(target,base,basis_id,baseline_files) if initialize_snapshot
+                   else self.workspaces.initialize(target,base,basis_id))
             if (not isinstance(proof,WorkspaceInitialization) or proof.basis_id!=basis_id
                     or proof.target!=target or proof.base_commit!=base
                     or str(UUID(proof.workspace_id))!=proof.workspace_id
@@ -307,6 +335,7 @@ class TaskReviewService:
                 input_digest=digest(recipe),expires_at=datetime.utcnow()+timedelta(minutes=10))
             self.db.add(row);self.db.commit()
             return {'confirmation_id':row.id,'expires_at':row.expires_at,'changes':changes,
+                    'diff':preview_diff(base,files,changes),
                     'no_change':not changes,'excluded_policy_version':POLICY_VERSION,
                     'excluded_paths':[p for p in sorted(base) if p.startswith(basis.folder_path+'/') and not eligible(p[len(basis.folder_path)+1:])],
                     'main_differs':git.read_ref(('heads','main')) not in (None,basis.base_commit)}
@@ -354,8 +383,19 @@ class TaskReviewService:
                 git.journal_create(source.id,'conversion',record)
                 return self._finish(git,conversion,record,recipe,actor)
             except Exception:
-                self.db.rollback();conversion=self.db.get(models.TaskReviewConversion,submission_id)
-                conversion.state='REVIEW_REQUIRED';self.db.commit();raise
+                self.db.rollback();conversion=self.db.get(models.TaskReviewConversion,submission_id,populate_existing=True)
+                # レビュー登録のcommitも、成功後に応答だけ失う可能性がある。
+                # 確定済みなら既存証拠を再検証し、古いPREPAREDへ降格させない。
+                if conversion is not None and conversion.state in ('READY','NO_CHANGE'):
+                    saved=git.journal_read(source.id,'conversion')
+                    if saved is None:conflict()
+                    return self._finish(git,conversion,saved,recipe,actor,commit=False)
+                if conversion is not None:
+                    changed=self.db.query(models.TaskReviewConversion).filter_by(
+                        submission_id=submission_id,state='PREPARED',input_digest=fingerprint).update(
+                            {'state':'REVIEW_REQUIRED'},synchronize_session=False)
+                    if changed:self.db.commit()
+                raise
 
     def _finish(self,git,conversion,saved,recipe,actor,commit=True):
         # PREPAREDのcommitで認可ロックは解放されるため、DB確定の直前にも再取得する。

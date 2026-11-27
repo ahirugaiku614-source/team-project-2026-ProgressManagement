@@ -127,10 +127,42 @@ test('結果不明の操作IDは再読込み後も保持する',async()=>{
   const store=memory();store.setItem('changes:v1:1:1:2:3',JSON.stringify({basis_id:BID,request_id:REQUEST,submission_id:SID,pending:'SUBMIT'}))
   const f=fixture({storage:store});await f.m.refreshWork();assert.equal(f.s.journal.pending,'SUBMIT');assert.equal(f.m.canPreview(),false)
 })
-test('収集ID未取得の応答不明は再収集せず管理者確認にする',async()=>{
-  const f=fixture({override:c=>c.path.endsWith('/collections')?Promise.reject(new ApiError(0,'NETWORK_UNKNOWN')):undefined});f.s.journal=null
+test('収集ID未取得の応答不明はrequest IDで照会し再収集しない',async()=>{
+  const f=fixture({override:c=>c.path.includes('/requests/')?{outcome:'UNKNOWN'}:c.path.endsWith('/collections')?Promise.reject(new ApiError(0,'NETWORK_UNKNOWN')):undefined});f.s.journal=null
   await f.m.collect();await f.m.collect();await f.m.checkResult()
-  assert.equal(posts(f).filter(c=>c.path.endsWith('/collections')).length,1);assert.ok(f.s.error.includes('収集ID'))
+  assert.equal(posts(f).filter(c=>c.path.endsWith('/collections')).length,1);assert.ok(f.s.error.includes('未実行を意味しません'))
+  assert.equal(f.calls.filter(c=>c.path.endsWith('/requests/'+REQUEST)).length,1)
+})
+
+test('request IDで収集IDを回復しても再提出しない',async()=>{
+  const f=fixture({override:c=>c.path.includes('/requests/')?{outcome:'RECORDED',submission_id:SID}:undefined})
+  f.s.journal.submission_id=null;f.s.journal.pending='COLLECTION'
+  await f.m.checkResult();assert.equal(f.s.journal.submission_id,SID);assert.equal(posts(f).length,0)
+})
+
+test('編集セッションを自己申告で有効にしない',async()=>{
+  const f=fixture({session:false,override:c=>c.path.endsWith('/editing-sessions')?Promise.reject(new ApiError(503,'EDIT_SESSION_UNVERIFIED')):undefined})
+  await f.m.connectSession();assert.equal(f.s.sessionConnected,false);assert.ok(f.s.error)
+})
+
+test('最新版取得は管理側へ明示要求し通信失敗後に自動再要求しない',async()=>{
+  const f=fixture({override:c=>c.path.endsWith('/environment')?Promise.reject(new ApiError(0,'NETWORK_UNKNOWN')):undefined})
+  await f.m.prepareEnvironment(true);await f.m.prepareEnvironment(true)
+  assert.equal(posts(f).filter(c=>c.path.endsWith('/environment')).length,1)
+})
+
+test('準備後の再照会中にProjectを変えても旧成功表示を持ち越さない',async()=>{
+  const d=deferred(),f=fixture({override:c=>c.path.endsWith('/environment')?{state:'CONFIRMED',basis_id:BID}:c.path.endsWith('/work-bases/current')?d.promise:undefined})
+  f.s.basis=null;f.s.journal=null
+  const old=f.m.prepareEnvironment();await new Promise(resolve=>setImmediate(resolve))
+  await f.m.selectProject(8);d.resolve({basis:{id:BID,state:'ACTIVE'}});await old
+  assert.equal(f.s.projectId,8);assert.equal(f.s.message,'');assert.equal(f.s.basis,null)
+})
+
+test('タスク関連情報の遅い応答も新しいProjectへ混入しない',async()=>{
+  const d=deferred(),f=fixture({override:c=>c.path.endsWith('/task-context')?d.promise:undefined})
+  const old=f.m.openReview(9);await new Promise(resolve=>setImmediate(resolve));await f.m.selectProject(8)
+  d.resolve({task_id:3});await old;assert.equal(f.s.detail,null);assert.equal(f.s.projectId,8)
 })
 test('削除候補を取得しても自動承認しない',async()=>{
   const f=fixture();await f.m.loadCandidates();assert.equal(f.s.selectedDeletes.length,0);assert.equal(posts(f).length,0)

@@ -4,6 +4,12 @@ export class ApiError extends Error {
 }
 
 export const explanations = {
+  ENVIRONMENT_REQUEST_REQUIRED: '「作業環境を準備」から操作してください。準備操作IDを記録してから開始します。',
+  ENVIRONMENT_OUTCOME_UNKNOWN: '前の作業環境準備が未確定です。別IDで再実行せず、準備結果を確認してください。',
+  EDITOR_GATEWAY_UNAVAILABLE: '安全なcode-server接続経路は未接続です。管理者の配置・実機検証が必要です。',
+  CONFIRMATION_NOT_FOUND: 'この変更確認は利用できません。対象を選び直して確認してください。',
+  UNSUBMITTED_CHANGES: '保存済みの未提出変更があるため更新しません。先に変更内容を確認してください。',
+  ENVIRONMENT_REQUEST_CONFLICT: '同じ準備操作IDが別の操作に使用されています。結果を確認してください。',
   AUTHENTICATION_REQUIRED: 'ログインし直してください。',
   REVIEW_FORBIDDEN: '担当・チーム所属・操作権限を確認してください。',
   REVIEW_TARGET_NOT_FOUND: '選択したプロジェクトとタスクの対応を確認してください。',

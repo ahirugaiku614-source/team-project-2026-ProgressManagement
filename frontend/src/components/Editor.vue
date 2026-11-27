@@ -77,7 +77,8 @@ import { VueMonacoEditor } from '@guolao/vue-monaco-editor'
 import { auth } from '../firebase'
 
 // ブラウザからアクセスするFastAPIのURL（Docker内部のbackendではない）
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+// 既定は同一originの認証済みproxy。利用者PCのlocalhostへ誤接続しない。
+const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 const currentRoute = useRoute()
 // 元のTeam/Project/Taskだけを引き継ぐ。本文・確認ID・認証情報をURLに含めない。
 const sharingUrl = computed(() => {

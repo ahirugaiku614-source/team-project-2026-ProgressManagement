@@ -189,7 +189,9 @@ class ReviewAPITests(unittest.TestCase):
         self.assertEqual(view['changes'],[{'path':self.prefix+'main.txt','change':'MODIFIED'}])
         self.assertEqual(self.db.query(models.ChangeRequest).count(),0)
         self.assertEqual(self.git.read_ref(('heads','main')),self.base)
-        self.assertNotIn('changed',str(view));self.assertNotIn(source.commit_id,str(view))
+        # Stage 9では提出前の明示確認に本文差分を追加した。収集commitの内部IDは
+        # 引き続き公開せず、確認だけでレビュー依頼・Git参照を作らない。
+        self.assertIn('changed',view['diff']['files'][0]['patch']);self.assertNotIn(source.commit_id,str(view))
         payload['confirmation_id']=view['confirmation_id']
         result=self.request('POST','/'+basis.id+'/change-request',payload)
         self.assertEqual(result.status_code,200,result.json());data=result.json()

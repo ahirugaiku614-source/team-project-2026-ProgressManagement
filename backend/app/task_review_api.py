@@ -4,9 +4,10 @@
 HTTPパラメーターから模擬providerや模擬検証器を選択する機能は設けない。
 """
 import time
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from fastapi.responses import JSONResponse
@@ -70,6 +71,11 @@ def get_task_review_service(db: Session = Depends(get_db), storage=Depends(get_p
     return TaskReviewService(db, storage, workspaces=workspaces)
 
 
+def get_work_environment(service=Depends(get_task_review_service)):
+    from app.work_environment import WorkEnvironment
+    return WorkEnvironment(service)
+
+
 class ReviewInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     submission_id: UUID
@@ -81,6 +87,16 @@ class ReviewInput(BaseModel):
 
 class EmptyInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
+
+
+class EnvironmentInput(EmptyInput):
+    request_id: UUID
+    previous_basis_id: UUID | None = None
+    session_id: UUID | None = None
+
+
+class EditorAccessInput(EmptyInput):
+    session_id: UUID
 
 
 class ConfirmedReview(ReviewInput):
@@ -119,6 +135,40 @@ def create_task_review_router(member_resolver):
     router = APIRouter(route_class=SafeRoute)
     root = '/api/teams/{team_id}/projects/{project_id}/tasks/{task_id}/work-bases'
 
+    @router.get('/api/teams/{team_id}/projects/{project_id}/change-requests/{request_id}/task-context')
+    def review_task(team_id: int, project_id: int, request_id: int, user=Depends(member_resolver),
+                    db: Session = Depends(get_db)):
+        project = db.get(models.Project, project_id)
+        change = db.get(models.ChangeRequest, request_id)
+        if project is None or project.team_id != team_id or change is None or change.project_id != project_id:
+            raise PublicError(404, 'REVIEW_TARGET_NOT_FOUND')
+        conversion = db.query(models.TaskReviewConversion).filter_by(change_request_id=request_id).first()
+        basis = db.get(models.WorkBasis, conversion.basis_id) if conversion else None
+        task = db.get(models.Task, basis.task_id) if basis else None
+        return {'task_id': basis.task_id if basis else None, 'task_title': task.title if task else None,
+                'previous_request_id': conversion.previous_request_id if conversion else None}
+
+    @router.get(root + '/environment')
+    def environment(team_id: int, project_id: int, task_id: int, user=Depends(member_resolver),
+                    runtime=Depends(get_work_environment)):
+        return runtime.status(user, team_id, project_id, task_id)
+
+    @router.post(root + '/environment')
+    def prepare_environment(team_id: int, project_id: int, task_id: int, payload: EnvironmentInput,
+                            user=Depends(member_resolver), runtime=Depends(get_work_environment)):
+        return runtime.prepare(user, team_id, project_id, task_id, str(payload.request_id),
+            str(payload.previous_basis_id) if payload.previous_basis_id else None,
+            str(payload.session_id) if payload.session_id else None)
+
+    @router.get(root + '/environment/requests/{request_id}')
+    def environment_result(team_id: int, project_id: int, task_id: int, request_id: UUID,
+                           user=Depends(member_resolver), runtime=Depends(get_work_environment)):
+        db = runtime.service.db
+        lock_target(db, user, team_id, project_id, task_id)
+        row = db.query(models.WorkEnvironmentOperation).filter_by(member_id=user.id,
+            team_id=team_id, project_id=project_id, task_id=task_id, request_id=str(request_id)).first()
+        return runtime.operation_public(row) if row else {'outcome': 'UNKNOWN', 'state': 'UNKNOWN', 'request_id': str(request_id), 'basis_id': None}
+
     def scope(service, user, team, project, task, basis_id=None):
         require_lifecycle(service.db)
         lock_target(service.db, user, team, project, task)
@@ -129,7 +179,9 @@ def create_task_review_router(member_resolver):
         return row
 
     def basis_public(row):
-        return {'id': row.id, 'state': row.state, 'started_at': row.created_at}
+        return {'id': row.id, 'state': row.state, 'started_at': row.created_at,
+                'base_version': row.base_commit, 'workspace_id': row.workspace_id,
+                'source_generation': row.source_generation}
 
     def source_for(service, user, basis, sid):
         row = service.db.get(models.TaskSubmission, str(sid), populate_existing=True)
@@ -140,6 +192,13 @@ def create_task_review_router(member_resolver):
     @router.post(root, status_code=201)
     def start(team_id: int, project_id: int, task_id: int, payload: EmptyInput, user=Depends(member_resolver), service=Depends(get_task_review_service)):
         scope(service, user, team_id, project_id, task_id)
+        # 新しい実ファイル初期化アダプターは受付を先行記録するenvironment入口に
+        # 限定する。旧入口からrequest IDなしで初期化を繰り返せないようにする。
+        if getattr(service.workspaces, 'initialize_from_snapshot', None) is not None:
+            raise PublicError(409, 'ENVIRONMENT_REQUEST_REQUIRED')
+        # 旧入口から最新版取得の保存状態検査を迂回させない。
+        if service.db.query(models.WorkBasis).filter_by(member_id=user.id, project_id=project_id,
+                task_id=task_id, state='ACTIVE').first():raise PublicError(409, 'WORK_BASIS_INACTIVE')
         return basis_public(service.start(user, team_id, project_id, task_id))
 
     @router.get(root + '/current')
@@ -152,11 +211,111 @@ def create_task_review_router(member_resolver):
     def basis(team_id: int, project_id: int, task_id: int, basis_id: UUID, user=Depends(member_resolver), service=Depends(get_task_review_service)):
         return basis_public(scope(service, user, team_id, project_id, task_id, basis_id))
 
+    @router.post(root + '/{basis_id}/editing-sessions', status_code=201)
+    def editing_session(team_id: int, project_id: int, task_id: int, basis_id: UUID, payload: EmptyInput,
+                        user=Depends(member_resolver), runtime=Depends(get_work_environment)):
+        basis = scope(runtime.service, user, team_id, project_id, task_id, basis_id)
+        return runtime.sessions.open(user, basis)
+
+    @router.post(root + '/{basis_id}/editing-sessions/{session_id}/revoke')
+    def revoke_session(team_id: int, project_id: int, task_id: int, basis_id: UUID, session_id: UUID,
+                       payload: EmptyInput, user=Depends(member_resolver), runtime=Depends(get_work_environment)):
+        basis = scope(runtime.service, user, team_id, project_id, task_id, basis_id)
+        db = runtime.service.db
+        row = db.get(models.WorkEditingSession, str(session_id), populate_existing=True)
+        if row is None or row.basis_id != basis.id or row.member_id != user.id:raise PublicError(404, 'EDIT_SESSION_UNVERIFIED')
+        if row.revoked_at is None:
+            row.revoked_at = datetime.utcnow();db.commit()
+        return {'session_id': row.id, 'state': 'REVOKED'}
+
+    @router.post(root + '/{basis_id}/editor-access')
+    def editor_access(team_id: int, project_id: int, task_id: int, basis_id: UUID,
+                      payload: EditorAccessInput, response: Response, user=Depends(member_resolver),
+                      runtime=Depends(get_work_environment)):
+        import secrets
+        from app.submissions import token_digest
+        basis = scope(runtime.service, user, team_id, project_id, task_id, basis_id)
+        if not runtime.editor_gateway:raise PublicError(503, 'EDITOR_GATEWAY_UNAVAILABLE')
+        session = runtime.service.db.get(models.WorkEditingSession, str(payload.session_id))
+        if session is None or session.basis_id != basis.id:raise PublicError(403, 'REVIEW_FORBIDDEN')
+        target = lock_target(runtime.service.db, user, team_id, project_id, task_id)
+        runtime.sessions.verify(target, session.id, basis.source_generation)
+        token = secrets.token_urlsafe(32)
+        from datetime import timedelta
+        expires = min(session.expires_at, datetime.utcnow() + timedelta(seconds=60))
+        runtime.service.db.add(models.WorkEditorAccess(token_digest=token_digest(token),
+            session_id=session.id, workspace_id=basis.workspace_id, expires_at=expires))
+        runtime.service.db.commit()
+        path = '/code-server/' + basis.workspace_id + '/'
+        # 平文capabilityはURL・応答JSONへ載せず、TLS前提のHttpOnly cookieだけに置く。
+        response.set_cookie('work_editor_' + basis.workspace_id, token, secure=True, httponly=True,
+            samesite='strict', path=path, max_age=60)
+        return {'url': path, 'expires_at': expires}
+
+    @router.get('/api/editor-gateway/{workspace_id}')
+    def editor_gate(workspace_id: UUID, request: Request, runtime=Depends(get_work_environment)):
+        import re
+        from app.submissions import token_digest
+        if not runtime.editor_gateway:raise PublicError(503, 'EDITOR_GATEWAY_UNAVAILABLE')
+        token = request.cookies.get('work_editor_' + str(workspace_id), '')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{43}', token):raise PublicError(401, 'AUTHENTICATION_REQUIRED')
+        db = runtime.service.db
+        access = db.get(models.WorkEditorAccess, token_digest(token))
+        if access is None or access.workspace_id != str(workspace_id) or access.expires_at <= datetime.utcnow():
+            raise PublicError(401, 'AUTHENTICATION_REQUIRED')
+        session = db.get(models.WorkEditingSession, access.session_id, populate_existing=True)
+        basis = db.get(models.WorkBasis, session.basis_id) if session else None
+        if basis is None or basis.workspace_id != str(workspace_id):raise PublicError(403, 'REVIEW_FORBIDDEN')
+        actor = db.get(models.User, session.member_id)
+        target = lock_target(db, actor, basis.team_id, basis.project_id, basis.task_id)
+        runtime.sessions.verify(target, session.id, basis.source_generation)
+        # auth_request専用の読取り。cookie更新・収集・復旧は行わない。
+        return Response(status_code=204)
+
     @router.get(root + '/{basis_id}/deletion-candidates')
     def candidates(team_id: int, project_id: int, task_id: int, basis_id: UUID, user=Depends(member_resolver), service=Depends(get_task_review_service)):
         scope(service, user, team_id, project_id, task_id, basis_id)
         # blob OIDやモードは管理側の削除証拠だけに保存し、HTTPへは出さない。
         return {'candidates': [{'id': k, 'path': v['path']} for k, v in service.deletion_candidates(user, str(basis_id)).items()]}
+
+    @router.get(root + '/{basis_id}/requests/{request_id}')
+    def request_result(team_id: int, project_id: int, task_id: int, basis_id: UUID, request_id: UUID,
+                       user=Depends(member_resolver), service=Depends(get_task_review_service)):
+        # 応答喪失で収集IDを受信できなくても、同じ本人・タスク・基準から照会できる。
+        # 未登録は未実行の証明にしない。GETから復旧・収集・基準失効更新を呼ばない。
+        row = scope(service, user, team_id, project_id, task_id, basis_id)
+        source = service.db.query(models.TaskSubmission).filter_by(student_id=user.id,
+            team_id=team_id, project_id=project_id, task_id=task_id, request_id=str(request_id)).first()
+        if source is None:
+            return {'outcome': 'UNKNOWN', 'request_id': str(request_id), 'submission_id': None}
+        bound = service.db.get(models.WorkCaptureBinding, source.id)
+        if bound is None or bound.basis_id != row.id:raise PublicError(409, 'COLLECTION_BASIS_CONFLICT')
+        return {'outcome': 'RECORDED', 'request_id': str(request_id), 'submission_id': source.id,
+                **result_public(service, row, source, service.db.get(models.TaskReviewConversion, source.id))}
+
+    @router.get(root + '/{basis_id}/confirmations/{confirmation_id}')
+    def confirmation(team_id: int, project_id: int, task_id: int, basis_id: UUID, confirmation_id: UUID,
+                     user=Depends(member_resolver), service=Depends(get_task_review_service)):
+        basis = scope(service, user, team_id, project_id, task_id, basis_id)
+        preview = service.db.get(models.WorkReviewPreview, str(confirmation_id))
+        if preview is None or preview.basis_id != basis.id:raise PublicError(404, 'CONFIRMATION_NOT_FOUND')
+        source_for(service, user, basis, preview.submission_id)
+        converted = service.db.get(models.TaskReviewConversion, preview.submission_id)
+        state = ('INACTIVE' if basis.state != 'ACTIVE' else 'CONSUMED' if converted else
+                 'EXPIRED' if preview.expires_at <= datetime.utcnow() else 'AVAILABLE')
+        return {'confirmation_id': preview.id, 'submission_id': preview.submission_id,
+                'state': state, 'expires_at': preview.expires_at}
+
+    @router.get(root + '/{basis_id}/deletion-intents')
+    def deletion_evidence(team_id: int, project_id: int, task_id: int, basis_id: UUID, submission_id: UUID,
+                          user=Depends(member_resolver), service=Depends(get_task_review_service)):
+        basis = scope(service, user, team_id, project_id, task_id, basis_id)
+        source_for(service, user, basis, submission_id)
+        bound = service.db.get(models.WorkCaptureBinding, str(submission_id))
+        if bound is None or bound.basis_id != basis.id:raise PublicError(404, 'COLLECTION_NOT_FOUND')
+        rows = service.db.query(models.TaskDeletionIntent).filter_by(basis_id=basis.id,
+            submission_id=str(submission_id), member_id=user.id).all()
+        return {'intents': [{'id': d.id, 'path': d.path} for d in rows]}
 
     @router.post(root + '/{basis_id}/deletion-intents', status_code=201)
     def deletion(team_id: int, project_id: int, task_id: int, basis_id: UUID, payload: DeletionInput, user=Depends(member_resolver), service=Depends(get_task_review_service)):
