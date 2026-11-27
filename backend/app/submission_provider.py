@@ -9,6 +9,14 @@ class ProviderUnavailable(RuntimeError):
     pass
 
 
+class EvidenceMismatch(ProviderUnavailable):
+    """保存済み証拠の欠落・矛盾を実際に確認した場合だけ使用する。
+
+    接続失敗、ロック待ち、読取り失敗、認可拒否、未知の例外はこの型に変換しない。
+    呼出し側は照合不能と確定した不整合を別々に処理する。
+    """
+
+
 @dataclass(frozen=True)
 class SubmissionCollection:
     submission_id: str
@@ -36,6 +44,12 @@ class SubmissionSnapshot:
 
 
 class SubmissionProvider(Protocol):
+    """verify/recoverは既存証拠の照合であり、新しい収集を許可しない。
+
+    新規収集の公開には、任意の専用verify_collectionがあればsubmitがそれを使う。
+    専用検査を持たない既存providerは、従来どおりverifyで公開条件も検証する。
+    いずれも信頼済みサーバー側の実装境界で、HTTP入力から検査を選択できない。
+    """
     def ensure_ready(self) -> None: ...
     def collect(self, request: SubmissionCollection) -> SubmissionSnapshot: ...
     def verify(self, request: SubmissionCollection, receipt: SubmissionSnapshot) -> None: ...

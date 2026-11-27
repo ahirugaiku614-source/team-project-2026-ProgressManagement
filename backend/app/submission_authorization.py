@@ -37,6 +37,39 @@ def auth_mac(key, claims):
     return hmac.new(key, b'STUDENT_SUBMISSION_AUTH_V1\0' + canonical(claims), hashlib.sha256).hexdigest()
 
 
+def _authorized_record(db, actor, target, submission_id, request_id, session_id, states):
+    """用途間で共有する本人・現在の権限・保存済み対応の検査。
+
+    収集許可の期限や現在のdirty状態はここでは判定しない。それらは新規収集の
+    発行側だけで必須にする。照合・復旧も、他人の記録や失効した現在の権限を
+    通過させず、既存のlock_targetと同じDBロック順を使う。
+    """
+    from app import models
+    from app.submissions import lock_target
+    from app.submission_rpc import uuid_text
+    for value in (submission_id, request_id, session_id):
+        uuid_text(value)
+    current = lock_target(db, actor, target.team_id, target.project_id, target.task_id)
+    if current != target:
+        reject()
+    row = db.get(models.TaskSubmission, submission_id, populate_existing=True)
+    if (row is None or row.state not in states
+            or (row.student_id, row.team_id, row.project_id, row.task_id,
+                row.folder_path, row.request_id, row.editing_session_id) !=
+               (target.student_id, target.team_id, target.project_id, target.task_id,
+                target.folder_path, request_id, session_id)):
+        reject()
+    permit = db.get(models.SubmissionPermit, row.permit_id, populate_existing=True)
+    if (permit is None or permit.consumed_at is None or permit.purpose != 'TASK_SUBMISSION'
+            or permit.token_digest != row.permit_digest
+            or (permit.student_id, permit.team_id, permit.project_id, permit.task_id,
+                permit.folder_path, permit.editing_session_id) !=
+               (row.student_id, row.team_id, row.project_id, row.task_id,
+                row.folder_path, row.editing_session_id)):
+        reject()
+    return row, permit
+
+
 class BackendAuthorizationIssuer:
     """認証済みUserを持つ管理側だけで使用。収集側にDB接続情報を渡さない。
 
@@ -54,23 +87,13 @@ class BackendAuthorizationIssuer:
         except Exception:reject()
 
     def _issue(self, request):
-        # DB依存は発行側のメソッド内だけに置き、検証側のimportには要求しない。
-        from app import models
-        from app.submissions import lock_target
         import calendar
         now=self.clock();validate_request(request,now)
         target=target_from(request['target'])
-        current=lock_target(self.db,self.actor,target.team_id,target.project_id,target.task_id)
-        if current!=target or self.generation_for(target)!=request['source_generation']:reject()
-        row=self.db.get(models.TaskSubmission,request['submission_id'],populate_existing=True)
-        if (row is None or row.state!='PROCESSING' or
-            (row.student_id,row.team_id,row.project_id,row.task_id,row.folder_path,row.request_id,row.editing_session_id)!=
-            (target.student_id,target.team_id,target.project_id,target.task_id,target.folder_path,request['request_id'],request['editing_session_id'])):reject()
-        permit=self.db.get(models.SubmissionPermit,row.permit_id,populate_existing=True)
-        if (permit is None or permit.consumed_at is None or permit.purpose!='TASK_SUBMISSION'
-                or permit.token_digest!=row.permit_digest
-                or (permit.student_id,permit.team_id,permit.project_id,permit.task_id,permit.folder_path,permit.editing_session_id)!=
-                (row.student_id,row.team_id,row.project_id,row.task_id,row.folder_path,row.editing_session_id)):reject()
+        row, permit = _authorized_record(self.db, self.actor, target,
+            request['submission_id'], request['request_id'], request['editing_session_id'],
+            states=('PROCESSING',))
+        if self.generation_for(target)!=request['source_generation']:reject()
         expires=calendar.timegm(permit.expires_at.utctimetuple())
         session=check_session(self.sessions,target,row.editing_session_id,request['source_generation'],now)
         end=min(request['expires_at'],expires,session.expires_at,now+30)
@@ -144,5 +167,29 @@ def authorized_rpc_provider(db, authenticated_user, *, rpc_keys, authorization_k
             'client_service':'submission-manager','server_service':'task-collector','authorization':None}
         issuer.issue(payload)
         return True
-    # saved_sessionの真正性も上の共通検査内で確認する。単なるクライアント申告は使わない。
-    return ManagedSnapshotProvider(None,store,current_authorization,current_authorization,collector=client.collect)
+
+    def evidence_authorization(request):
+        # 保存済み証拠の読取り専用認可。署名を発行せず、RPC・台帳消費も呼ばない。
+        # PROCESSINGはGit成功後のDB確定前、REVIEW_REQUIREDは明示復旧のために許す。
+        # 新規収集を許す状態の追加ではない。既存証拠の完全性はGit storeと呼出し元が
+        # 照合し、過去のsession ID・消費済みpermitとの結合は現在も厳密に維持する。
+        # 現在のdirty状態やpermit期限を過去のスナップショットへ遡って適用しない。
+        from app.submission_targets import TargetForbidden, TargetInvalid, TargetConflict
+        from app.submission_provider import ProviderUnavailable
+        try:
+            if request.target != target:
+                reject()
+            _authorized_record(db, authenticated_user, request.target,
+                request.submission_id, request.request_id, request.editing_session_id,
+                states=('PROCESSING', 'SUBMITTED', 'REVIEW_REQUIRED'))
+            return True
+        except (TargetForbidden, TargetInvalid, TargetConflict):
+            # 認可拒否だけを既存provider契約へ変換する。DB停止や内部例外を
+            # 証拠破損に変換せず、呼出し側で照合不能として扱わせる。
+            raise ProviderUnavailable('Stored submission access denied') from None
+
+    # 収集の保存状態検査は従来どおりissuer内の実検証器を必須にする。
+    # 照合と復旧は同じ読取り権限を使うが、それぞれ専用の入口へ明示接続する。
+    return ManagedSnapshotProvider(None,store,current_authorization,current_authorization,
+        collector=client.collect, verify_authorize=evidence_authorization,
+        recover_authorize=evidence_authorization)
