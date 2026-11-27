@@ -22,12 +22,24 @@ class VerifiedSession:
     saved: bool
 
 
+@dataclass(frozen=True)
+class SnapshotSession:
+    """方式Cの認証済み編集セッション。dirtyの真偽を表す値を持たない。"""
+    target: object
+    session_id: str
+    source_generation: int
+    expires_at: int
+    basis_id: str
+    workspace_id: str
+
+
 def check_session(verifier, target, session, generation, now):
     # 検証器は認証済みsessionの現状態を独立確認する。本文や強制保存は扱わない。
     evidence = verifier.verify(target, session, generation)
-    if (not isinstance(evidence, VerifiedSession) or evidence.target != target
+    if (type(evidence) not in (VerifiedSession, SnapshotSession) or evidence.target != target
             or evidence.session_id != session or type(evidence.source_generation) is not int
-            or evidence.source_generation != generation or evidence.saved is not True
+            or evidence.source_generation != generation
+            or (type(evidence) is VerifiedSession and evidence.saved is not True)
             or type(evidence.expires_at) is not int or evidence.expires_at <= now): reject()
     return evidence
 
@@ -101,6 +113,15 @@ class BackendAuthorizationIssuer:
         binding={k:v for k,v in request.items() if k!='authorization'}
         claims={'version':1,'purpose':'COLLECT_FOR_SUBMISSION','audience':self.collector_id,
                 'binding':binding,'issued_at':now,'expires_at':end}
+        if type(session) is SnapshotSession:
+            # dirtyの証明とは別用途で、現在のセッション認可を署名する。
+            from app import models
+            binding_row=self.db.get(models.WorkCaptureBinding,row.id,populate_existing=True)
+            if (binding_row is None or (binding_row.basis_id,binding_row.workspace_id,
+                    binding_row.source_generation,binding_row.editing_session_id) !=
+                    (session.basis_id,session.workspace_id,session.source_generation,session.session_id)):reject()
+            claims.update(version=2,purpose='COLLECT_SAVED_SNAPSHOT',
+                          basis_id=session.basis_id,workspace_id=session.workspace_id)
         return {'claims':claims,'signature':auth_mac(self.key,claims)}
 
 
@@ -110,9 +131,10 @@ class CollectorAuthorizationVerifier:
     認可後のDB失効を収集側だけで即時検出することはできない。証拠は最大30秒で、
     管理側の前後認可と組み合わせる。検証器異常はTrueへ変換しない。
     """
-    def __init__(self,key,collector_id,target,generation,*,sessions=None,clock=lambda:int(time.time())):
+    def __init__(self,key,collector_id,target,generation,*,sessions=None,clock=lambda:int(time.time()),workspace_id=None):
         self.key,self.collector_id,self.target,self.generation=key,collector_id,target,generation
         self.sessions=sessions if sessions is not None else DeniedSessionVerifier();self.clock=clock
+        self.workspace_id=workspace_id
 
     def __call__(self,request):
         try:
@@ -121,17 +143,28 @@ class CollectorAuthorizationVerifier:
             evidence=request['authorization']
             if not isinstance(evidence,dict) or set(evidence)!={'claims','signature'}:reject()
             claims=evidence['claims'];signature=evidence['signature']
-            if not isinstance(claims,dict) or set(claims)!={'version','purpose','audience','binding','issued_at','expires_at'}:reject()
+            if not isinstance(claims,dict):reject()
+            expected={'version','purpose','audience','binding','issued_at','expires_at'}
+            if claims.get('version')==2:expected|={'basis_id','workspace_id'}
+            if set(claims)!=expected:reject()
             if type(signature) is not str or len(signature)!=64 or any(c not in '0123456789abcdef' for c in signature):reject()
             if not hmac.compare_digest(signature,auth_mac(self.key,claims)):reject()
             binding={k:v for k,v in request.items() if k!='authorization'}
-            if (type(claims['version']) is not int or claims['version']!=1
-                    or claims['purpose']!='COLLECT_FOR_SUBMISSION' or claims['audience']!=self.collector_id
+            snapshot = type(claims['version']) is int and claims['version']==2 and claims['purpose']=='COLLECT_SAVED_SNAPSHOT'
+            legacy = type(claims['version']) is int and claims['version']==1 and claims['purpose']=='COLLECT_FOR_SUBMISSION'
+            if (not (snapshot or legacy) or claims['audience']!=self.collector_id
                     or canonical(claims['binding'])!=canonical(binding)
                     or any(type(claims[f]) is not int for f in ('issued_at','expires_at'))
                     or not claims['issued_at']<=now<claims['expires_at']<=claims['issued_at']+30
                     or target_from(request['target'])!=self.target or request['source_generation']!=self.generation):reject()
-            check_session(self.sessions,self.target,request['editing_session_id'],self.generation,now)
+            if not snapshot:
+                check_session(self.sessions,self.target,request['editing_session_id'],self.generation,now)
+            else:
+                from app.submission_rpc import uuid_text
+                uuid_text(claims['basis_id']);uuid_text(claims['workspace_id'])
+                if self.workspace_id is None or claims['workspace_id']!=self.workspace_id:reject()
+            # 方式Cは管理側のDB認可・セッション検証に基づく最大30秒の署名を使用。
+            # dirty=falseを作らず、収集後の管理側認可も引き続き必須とする。
             return True
         except Exception:
             reject()

@@ -1,0 +1,35 @@
+{
+  "説明": "各設定を管理者が分割配置する。文字列のREPLACE値は実証後の整数・UUIDへ置換し、秘密鍵の値は記載しない。",
+  "collector": {
+    "target": {"team_id": "REPLACE_TEAM_ID", "project_id": "REPLACE_PROJECT_ID", "task_id": "REPLACE_TASK_ID", "student_id": "REPLACE_MEMBER_DB_ID", "folder_path": "tasks/example-task"},
+    "workspace_id": "REPLACE_INITIALIZED_WORKSPACE_UUID",
+    "generation": 1,
+    "collector_id": "synthetic-collector-a",
+    "root": "/source",
+    "owner_uid": "REPLACE_CONTAINER_UID",
+    "client_uid": "REPLACE_MANAGER_CONTAINER_UID",
+    "client_gid": "REPLACE_MANAGER_CONTAINER_GID",
+    "endpoint": "/run/collector/collect.sock",
+    "server_ledger": "/run/collector-ledger/requests.sqlite",
+    "request_key_file": "/run/collector-keys/request.key",
+    "response_key_file": "/run/collector-keys/response.key",
+    "authorization_key_file": "/run/collector-keys/authorization.key"
+  },
+  "backend_collector": {
+    "target": {"team_id": "REPLACE_SAME_TEAM_ID", "project_id": "REPLACE_SAME_PROJECT_ID", "task_id": "REPLACE_SAME_TASK_ID", "student_id": "REPLACE_SAME_MEMBER_DB_ID", "folder_path": "tasks/example-task"},
+    "workspace_id": "REPLACE_SAME_INITIALIZED_WORKSPACE_UUID",
+    "generation": 1,
+    "collector_id": "synthetic-collector-a",
+    "owner_uid": "REPLACE_COLLECTOR_CONTAINER_UID",
+    "endpoint": "/run/collector-a/collect.sock",
+    "client_ledger": "/run/client-ledgers/a/requests.sqlite",
+    "request_key_file": "/run/workspace-keys/a-collect-request.key",
+    "response_key_file": "/run/workspace-keys/a-collect-response.key",
+    "authorization_key_file": "/run/workspace-keys/a-collect-authorization.key"
+  },
+  "backend_schema": {
+    "workers": ["REPLACE_WITH_EXISTING_WORKSPACE_CONFIG_OBJECTS"],
+    "collectors": ["REPLACE_WITH_BACKEND_COLLECTOR_OBJECT_A_AND_B"],
+    "gateway_enabled": false
+  }
+}

@@ -4,6 +4,15 @@ import { readFile } from 'node:fs/promises'
 import { createWorkflow, initialState, permissions, reviewLabel, serverTime } from '../src/code-sharing/workflow.mjs'
 import { createApi, ApiError, explain } from '../src/code-sharing/api.mjs'
 
+test('方式Cはdirty=falseの自己申告を収集要求へ含めない', async () => {
+  const {m,s,calls}=fixture()
+  s.journal=null; s.result=null
+  await m.collect()
+  const request=calls.find(c=>c.path.endsWith('/collections'))
+  assert.ok(request)
+  assert.equal(Object.hasOwn(request.body,'has_unsaved_changes'),false)
+})
+
 // 期待値は固定した合成ID・応答から定義する。実Firebase・実API・実ファイル収集には接続しない。
 const BID = '11111111-1111-4111-8111-111111111111', SID = '22222222-2222-4222-8222-222222222222'
 const CID = '33333333-3333-4333-8333-333333333333', REQUEST = '44444444-4444-4444-8444-444444444444'

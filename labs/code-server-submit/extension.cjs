@@ -20,22 +20,18 @@ function command(vscode, env) {
     if (!vscode.workspace.isTrusted || vscode.workspace.workspaceFolders?.length !== 1) {
       await vscode.window.showWarningMessage('信頼済みの単一作業環境で操作してください。'); return
     }
-    // 全文書を保守的に確認するだけでgetText・save・外部送信は呼ばない。
-    // 他ウィンドウ・セッションの状態は分からないため、管理側が別途検証する。
+    // 方式Cではローカルの未保存状態は注意喚起だけに使用する。
+    // getText・saveは呼ばず、管理画面で固定した保存済み内容への同意を得る。
     if (vscode.workspace.textDocuments.some(document => document.isDirty)) {
-      await vscode.window.showWarningMessage('未保存の変更があります。保存後に操作してください。'); return
+      await vscode.window.showWarningMessage('未保存の変更は提出されません。含めたい変更は先に保存してください。')
     }
     let url
     try { url = submissionURL(env) } catch {
       await vscode.window.showWarningMessage('管理側の接続設定を確認できません。'); return
     }
     const answer = await vscode.window.showInformationMessage(
-      '管理画面で変更内容を確認し、明示的に提出します。ここでは本文の取得・提出を行いません。', {modal: true}, '変更を確認')
+      '保存済みの内容を管理画面で固定し、差分を確認してから提出します。未保存の変更は含めません。ここでは本文取得・保存・提出を行いません。', {modal: true}, '変更を確認')
     if (answer !== '変更を確認') return
-    // 確認待ちの間にdirtyへ変わった場合も、明示的なやり直しを求める。
-    if (vscode.workspace.textDocuments.some(document => document.isDirty)) {
-      await vscode.window.showWarningMessage('保存状態が変わりました。保存後にやり直してください。'); return
-    }
     await vscode.env.openExternal(vscode.Uri.parse(url))
   }
 }

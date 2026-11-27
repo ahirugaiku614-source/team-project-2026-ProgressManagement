@@ -29,8 +29,8 @@ class SubmissionCollection:
 class SubmissionSnapshot:
     """Receipt for an immutable snapshot, not a client supplied file upload.
 
-    Collector must independently verify the editing session, absence of dirty
-    documents, stable saved files, limits/links and persist the immutable snapshot.
+    収集器はセッション認可・安定した保存済みファイル・上限・リンクを検証する。
+    方式Cでは未保存バッファの不存在を主張せず、固定した内容だけを提出する。
     Returning a receipt without those checks violates this trusted interface.
     """
     submission_id: str

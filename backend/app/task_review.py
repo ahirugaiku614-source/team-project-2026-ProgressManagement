@@ -17,6 +17,7 @@ from app.change_request_reviews import verified_object, verify_snapshot
 from app.change_requests import reference_key, row_manifest
 from app.project_storage import StorageConflict
 from app.workspace_scope import WorkspaceInitialization
+from app.submission_scope import TargetForbidden,TargetInvalid,TargetConflict
 
 POLICY_VERSION = 1
 
@@ -188,7 +189,9 @@ class TaskReviewService:
         basis=self.db.get(models.WorkBasis,basis_id,populate_existing=True)
         if basis is None or basis.member_id!=actor.id:conflict()
         try:target=lock_target(self.db,actor,basis.team_id,basis.project_id,basis.task_id)
-        except Exception:
+        except (TargetForbidden,TargetInvalid,TargetConflict):
+            # 一時的なDB待ち・通信不能を権限失効と断定しない。明確な認可拒否だけを
+            # 失効として保存し、未知の例外は成功扱いせず上位へ返す。
             basis=self.db.get(models.WorkBasis,basis_id);basis.state='REVOKED';self.db.commit();raise
         if self.db.get(models.Task,basis.task_id).status == models.TaskStatus.DONE:
             basis.state='REVOKED';self.db.commit();raise TaskReviewError('TASK_FINISHED')

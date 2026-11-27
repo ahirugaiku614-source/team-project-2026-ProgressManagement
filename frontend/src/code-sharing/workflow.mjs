@@ -129,6 +129,11 @@ export function createWorkflow({ request, state = initialState(), storage = null
       const base = taskPath()
       const [current, environment] = await Promise.all([get(base + '/work-bases/current'), get(projectPath() + '/editor')])
       if (e !== epoch || work !== workEpoch) return
+      if (s.basis?.id !== current.basis?.id) {
+        // 新世代へ旧session・確認ID・接続リンクを持ち越さない。旧環境自体は削除しない。
+        managedSession = null; s.sessionConnected = !!sessionSource
+        s.preview = null; s.editorUrl = null; s.result = null
+      }
       s.basis = current.basis; s.environment = environment; restore()
     } catch (error) { if (e === epoch && work === workEpoch) { s.error = explain(error); s.preview = null; s.basis = null; s.environment = null } }
     finally { if (e === epoch && work === workEpoch) s.loading = false }
@@ -172,7 +177,7 @@ export function createWorkflow({ request, state = initialState(), storage = null
       if (e !== epoch) return
       if (!uuid(result.session_id) || !Number.isFinite(serverTime(result.expires_at)) || serverTime(result.expires_at) <= now()) throw new ApiError(502, 'RESPONSE_INVALID')
       managedSession = result.session_id; s.sessionConnected = true
-      s.message = '管理側で編集セッションを確認しました。提出時にも保存状態を再検証します。'
+      s.message = '管理側で編集セッションを確認しました。未保存の変更は提出対象に含まれません。'
     })
   }
   async function openEditor() {
@@ -234,10 +239,11 @@ export function createWorkflow({ request, state = initialState(), storage = null
       if (!uuid(sessionId)) throw new ApiError(503, 'EDIT_SESSION_UNVERIFIED')
       const j = { basis_id: basisId, request_id: makeId(), submission_id: null, pending: 'COLLECTION' }
       s.journal = j; save(k, j)
-      // falseという申告を認証の代わりに使わない。バックエンドも独立してsessionとdirtyを検証する。
+      // 方式Cはdirty=falseを申告しない。管理側のセッション認可を通して、
+      // ディスク上の内容だけを新しい不変スナップショットとして固定する。
       const permit = await request(base + '/submission-permits', { method: 'POST', body: { editing_session_id: sessionId } })
       const result = await request(path + '/collections', { method: 'POST', body: {
-        editing_session_id: sessionId, request_id: j.request_id, permit: permit.permit, has_unsaved_changes: false,
+        editing_session_id: sessionId, request_id: j.request_id, permit: permit.permit,
       } })
       if (!uuid(result.submission_id) || !['SUBMITTED','PROCESSING','REVIEW_REQUIRED'].includes(result.collection_state)) throw new ApiError(502, 'RESPONSE_INVALID')
       j.submission_id = result.submission_id; j.pending = null; save(k, j)

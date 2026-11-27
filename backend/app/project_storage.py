@@ -78,7 +78,7 @@ class ProjectStorage:
                     yield project
 
     @contextmanager
-    def _lock(self, project):
+    def _lock(self, project, *, wait=True):
         import fcntl
         try:
             fd = os.open(".init.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=project)
@@ -96,7 +96,9 @@ class ProjectStorage:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    if time.monotonic() >= deadline:
+                    # レビュー経路はDBロックを保持して入る場合がある。Gitロックを
+                    # 待たずに返し、Git→DBとの循環待ちを作らない。初期化は従来どおり。
+                    if not wait or time.monotonic() >= deadline:
                         raise StorageUnavailable("Project initialization is busy; retry later")
                     time.sleep(0.05)
             yield

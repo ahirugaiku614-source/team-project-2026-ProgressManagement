@@ -1,0 +1,43 @@
+# 承認後、停止済みの合成volumeをメタデータだけ検査する独立構成。
+# 既存コンテナを起動・変更しない。volume名はinspect結果から管理者が固定する。
+name: stage10b-synthetic-volume-audit
+x-audit: &audit
+  profiles: [approved-synthetic-audit]
+  image: ${TEAM_BACKEND_IMAGE:?Stage10Bの検査コードを含むdigest固定image}
+  runtime: runc
+  read_only: true
+  network_mode: none
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 32
+  mem_limit: 128m
+  cpus: 0.25
+  restart: "no"
+services:
+  audit-a:
+    <<: *audit
+    user: "${SYNTH_A_UID:?rootless内の実UID}:${SYNTH_A_GID:?rootless内の実GID}"
+    command: [python, -B, -m, app.stage10_preflight, --approved-synthetic, --source, /source, --relative-file, "${SYNTH_A_PROBE:?登録済みの合成ファイル相対パス}", --expected-uid, "${SYNTH_A_UID}"]
+    volumes:
+      - type: volume
+        source: existing-a
+        target: /source
+        read_only: true
+        volume: {nocopy: true}
+  audit-b:
+    <<: *audit
+    user: "${SYNTH_B_UID:?rootless内の実UID}:${SYNTH_B_GID:?rootless内の実GID}"
+    command: [python, -B, -m, app.stage10_preflight, --approved-synthetic, --source, /source, --relative-file, "${SYNTH_B_PROBE:?登録済みの合成ファイル相対パス}", --expected-uid, "${SYNTH_B_UID}"]
+    volumes:
+      - type: volume
+        source: existing-b
+        target: /source
+        read_only: true
+        volume: {nocopy: true}
+volumes:
+  existing-a:
+    external: true
+    name: ${STAGE10_EXISTING_A_VOLUME:?既存A専用volumeの正確な名前}
+  existing-b:
+    external: true
+    name: ${STAGE10_EXISTING_B_VOLUME:?既存B専用volumeの正確な名前}

@@ -3,7 +3,7 @@
 export function syntheticApi() {
   let actor=1, sequence=0, main='print("Hello team")\n', version='1'.repeat(40)
   const users={1:{id:1,name:'メンバーA'},2:{id:2,name:'メンバーB'}}
-  const work={}, requests=new Map(), captures=new Map(), confirmations=new Map(), reviews=[]
+  const work={}, history=[], requests=new Map(), captures=new Map(), confirmations=new Map(), reviews=[]
   const id=()=>`90000000-0000-4000-8000-${String(++sequence).padStart(12,'0')}`
   const error=code=>{const e=new Error('合成操作を完了できません');e.code=code;throw e}
   const current=()=>work[actor] ||= {saved:main,draft:main,basis:null}
@@ -18,8 +18,9 @@ export function syntheticApi() {
     if(path.endsWith('/editor'))return {state:'UNAVAILABLE',launch_enabled:false}
     if(path.endsWith('/environment') && method==='GET')return {state:'CONFIGURED',prepare_enabled:true,launch_enabled:false}
     if(path.endsWith('/environment') && method==='POST') {
-      if(body.previous_basis_id && (w.draft!==w.saved || w.saved!==w.base))error(w.draft!==w.saved?'UNSAVED_CHANGES':'UNSUBMITTED_CHANGES')
+      if(body.previous_basis_id && w.saved!==w.base)error('UNSUBMITTED_CHANGES')
       if(requests.has(body.request_id))return requests.get(body.request_id)
+      if(body.previous_basis_id)history.push({...w,actor})
       w.base=main;w.saved=main;w.draft=main;w.basis={id:id(),state:'ACTIVE',workspace_id:id(),base_version:version,started_at:new Date().toISOString()};w.version=version
       const r={state:'CONFIRMED',basis_id:w.basis.id};requests.set(body.request_id,r);return r
     }
@@ -28,7 +29,7 @@ export function syntheticApi() {
     if(path.endsWith('/editor-access'))error('EDITOR_GATEWAY_UNAVAILABLE')
     if(path.endsWith('/submission-permits'))return {permit:'synthetic-permit-not-a-real-credential'}
     if(path.endsWith('/collections') && method==='POST') {
-      if(w.draft!==w.saved)error('UNSAVED_CHANGES')
+      // 方式Cはdraftを収集しない。文字列として固定したsavedだけを保持する。
       const capture={id:id(),actor,basis:w.basis.id,saved:w.saved,base:w.base,version:w.version}
       captures.set(capture.id,capture);const r={...result(capture),outcome:'RECORDED'};requests.set(body.request_id,r);return r
     }
@@ -73,5 +74,5 @@ export function syntheticApi() {
     }
     error('REVIEW_SERVICE_UNAVAILABLE')
   }
-  return {request,selectActor:value=>{actor=value},draft:value=>{current().draft=value},save:()=>{current().saved=current().draft},current,shared:()=>main}
+  return {request,selectActor:value=>{actor=value},draft:value=>{current().draft=value},save:()=>{current().saved=current().draft},current,shared:()=>main,previousGenerations:()=>history.map(w=>({...w}))}
 }

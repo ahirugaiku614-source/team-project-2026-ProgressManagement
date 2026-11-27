@@ -400,6 +400,7 @@ class WorkReviewPreview(Base):
 class WorkEditingSession(Base):
     """管理側が発行する編集セッション。拡張のdirty申告や認証鍵は保存しない。"""
     __tablename__ = 'work_editing_sessions'
+    capture_policy = Column(String(32), nullable=False, default='EDITOR_SAVED_V1', server_default='EDITOR_SAVED_V1')
     __table_args__ = ({'info': {'requires_explicit_migration': True}},)
     id = Column(String(36), primary_key=True)
     basis_id = Column(String(36), ForeignKey('work_bases.id', ondelete='RESTRICT'), nullable=False)

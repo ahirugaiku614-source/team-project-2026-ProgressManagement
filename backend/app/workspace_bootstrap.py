@@ -54,8 +54,7 @@ def build_backend_environment(db,actor,storage,settings,*,enabled=False):
     from app.submission_uds import UnixSocketTransport
     from app.workspace_files import MappedWorkspaces
     from app.task_review import TaskReviewService
-    from app.work_environment import WorkEnvironment,EditingSessions
-    from app.editor_authority import IndependentEditorAuthority
+    from app.work_environment import WorkEnvironment,SnapshotEditingSessions
     adapters={}
     for config in settings:
         target=target_from(config['target'])
@@ -63,28 +62,58 @@ def build_backend_environment(db,actor,storage,settings,*,enabled=False):
         keys,auth=keys_from(config)
         client=RemoteWorkspaces(keys,UnixSocketTransport(config['endpoint'],config['owner_uid'],enabled=True,max_request=MAX_FRAME),
             WorkspaceAuthorizationIssuer(db,actor,auth),member_id=target.student_id,project_id=target.project_id)
+        # workspace証拠と方式CのDBセッションを照合する。dirty値は作らない。
+        def verify_capture(basis,row,fixed=target):
+            from app.submission_authorization import SnapshotSession
+            evidence=SnapshotEditingSessions(db).verify(fixed,row.editing_session_id,basis.source_generation)
+            return (type(evidence) is SnapshotSession and row.student_id==actor.id
+                    and (evidence.basis_id,evidence.workspace_id)==(basis.id,basis.workspace_id))
+        client.collection_verifier=verify_capture
         if (actor.id,target.project_id) in adapters:reject()
         adapters[(actor.id,target.project_id)]=client
     service=TaskReviewService(db,storage,workspaces=MappedWorkspaces(adapters))
-    sessions=EditingSessions(db,IndependentEditorAuthority())
-    # 初期化RPCは接続できてもdirtyの真正性は別問題。gateway/収集は許可しない。
+    sessions=SnapshotEditingSessions(db)
+    # 方式CのDBセッションを使用する。収集providerとgatewayの実接続は別途承認。
     return WorkEnvironment(service,sessions,editor_gateway=False)
 
 
-def install_backend(app,member_resolver,settings,*,enabled=False):
+def install_backend(app,member_resolver,settings,*,enabled=False,collectors=(),gateway_enabled=False):
     """起動管理者が固定設定で呼ぶ。認証・DB依存は既存関数をそのまま使う。"""
     if enabled is not True:reject()
     from fastapi import Depends
     from app.db.database import get_db
     from app.project_storage import get_project_storage
-    from app.task_review_api import get_work_environment,get_task_review_service,get_review_sessions
+    from app.task_review_api import get_work_environment,get_task_review_service,get_review_sessions,get_gateway_environment
+    if type(gateway_enabled) is not bool:reject()
     def runtime(actor=Depends(member_resolver),db=Depends(get_db),storage=Depends(get_project_storage)):
-        return build_backend_environment(db,actor,storage,settings,enabled=True)
+        result=build_backend_environment(db,actor,storage,settings,enabled=True)
+        result.editor_gateway=gateway_enabled
+        return result
     def service(current=Depends(runtime)):return current.service
     def sessions(current=Depends(runtime)):return current.sessions
     app.dependency_overrides[get_work_environment]=runtime
     app.dependency_overrides[get_task_review_service]=service
     app.dependency_overrides[get_review_sessions]=sessions
+    # cookie gateにはTeam付きFirebase依存を要求しない。既存capability検証が
+    # actor・workspace・sessionをDBから特定する。通常APIの認証は変更しない。
+    def gateway(db=Depends(get_db)):
+        from app.task_review import TaskReviewService
+        from app.work_environment import WorkEnvironment,SnapshotEditingSessions
+        # gateはDBのcapabilityと現権限だけを読み、Git・初期化先には接続しない。
+        return WorkEnvironment(TaskReviewService(db),SnapshotEditingSessions(db),editor_gateway=gateway_enabled)
+    app.dependency_overrides[get_gateway_environment]=gateway
+    if collectors:
+        from fastapi import Request
+        from app.snapshot_runtime import configured_snapshot_provider
+        from app.submission_provider import get_submission_provider
+        def provider(request:Request,actor=Depends(member_resolver),db=Depends(get_db),storage=Depends(get_project_storage)):
+            from app import models
+            basis=db.get(models.WorkBasis,str(request.path_params.get('basis_id','')),populate_existing=True)
+            if basis is None or basis.member_id!=actor.id:reject()
+            matches=[c for c in collectors if c['workspace_id']==basis.workspace_id]
+            if len(matches)!=1:reject()
+            return configured_snapshot_provider(db,actor,storage,basis.id,matches[0],enabled=True)
+        app.dependency_overrides[get_submission_provider]=provider
 
 
 def socket_gateway_main():

@@ -46,7 +46,15 @@ test('HTML・スクリプト・イベント属性をテキストとして描画�
 })
 test('未接続時に保存済み・取得成功と見せず、収集を無効化する', async () => {
   const html=await render(sample())
-  assert.ok(html.includes('保存状態を確認できない'));assert.ok(html.includes('未接続'));assert.ok(/disabled[^>]*>保存済みファイルを収集/.test(html))
+  assert.ok(html.includes('保存状態を確認できない'));assert.ok(/disabled[^>]*>保存済み変更を固定して確認/.test(html))
+})
+
+test('方式Cの未保存除外と確認時点の固定内容を説明する', async () => {
+  const s=sample()
+  s.preview={confirmation_id:'33333333-3333-4333-8333-333333333333',expires_at:'2099-01-01T00:00:00',changes:[],excluded_paths:[],no_change:false}
+  const html=await render(s)
+  assert.ok(html.includes('未保存の変更は提出されません'))
+  assert.ok(html.includes('ここに表示した固定済みの内容だけを提出します'))
 })
 test('大量の差分を一度に全表示しない', async () => {
   const s=sample();s.diff.files=Array.from({length:1000},(_,i)=>({path:`src/file-${i}`,change:'A',patch:'+'+'x'.repeat(22000)}))

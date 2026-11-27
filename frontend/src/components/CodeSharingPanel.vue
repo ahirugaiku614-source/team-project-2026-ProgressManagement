@@ -43,14 +43,14 @@ const conversionLabel = computed(() => ({ READY: 'レビュー依頼作成済み
         <h2 id="own-title">自分の作業</h2>
         <template v-if="task">
           <h3>{{ task.title }}</h3><p>タスク進捗：{{ taskProgress }} <span class="badge">{{ basisLabel }}</span></p>
-          <dl><dt>作業開始日時</dt><dd>{{ date(s.basis?.started_at) }}</dd><dt>作業開始時のバージョン</dt><dd>{{ s.basis?.base_version ? s.basis.base_version.slice(0,12) : '未取得（管理側で固定）' }}</dd><dt>作業環境</dt><dd>{{ s.environment?.state === 'CONFIGURED' ? '管理側の接続設定あり（実機検証は別途必要）' : '準備中・接続できません' }}</dd><dt>保存状態</dt><dd>{{ s.sessionConnected ? '提出時に管理側で再確認します' : '保存状態を確認できない' }}</dd></dl>
+          <dl><dt>作業開始日時</dt><dd>{{ date(s.basis?.started_at) }}</dd><dt>作業開始時のバージョン</dt><dd>{{ s.basis?.base_version ? s.basis.base_version.slice(0,12) : '未取得（管理側で固定）' }}</dd><dt>作業環境</dt><dd>{{ s.environment?.state === 'CONFIGURED' ? '管理側の接続設定あり（実機検証は別途必要）' : '準備中・接続できません' }}</dd><dt>保存状態</dt><dd>{{ s.sessionConnected ? '編集セッション認証済み（未保存の変更は含めません）' : '保存状態を確認できない' }}</dd></dl>
           <div class="buttons"><button :disabled="s.busy || s.basis?.state === 'ACTIVE'" @click="model.prepareEnvironment(false)">作業環境を準備</button><button class="secondary" :disabled="s.busy" @click="model.refreshEnvironment">接続条件を確認</button><button class="secondary" :disabled="s.busy" @click="model.checkEnvironment">準備結果を確認</button><button class="secondary" :disabled="s.busy || !model.active()" @click="model.connectSession">編集セッションを確認</button><button class="secondary" :disabled="s.busy || !model.active() || !s.sessionConnected" @click="model.prepareEnvironment(true)">最新版を取得（新しい環境）</button></div>
           <div class="buttons"><button class="secondary" :disabled="s.busy" @click="model.refreshWork">作業環境・基準を確認</button></div>
           <button :disabled="s.busy || !s.sessionConnected" @click="model.openEditor">code-serverの接続を準備</button><a v-if="s.editorUrl" :href="s.editorUrl" target="_blank" rel="noopener noreferrer">code-serverを開く</a>
-          <p class="notice">保存だけでは変更を提出しません。管理側の検証基盤が未接続なら操作は拒否されます。以前の作業環境は上書きしません。</p>
+          <p class="notice">保存だけでは変更を提出しません。未保存の変更は提出されません。先にcode-serverで保存し、保存済み変更を固定して確認してください。以前の作業環境は上書きしません。</p>
           <template v-if="s.preview?.diff"><h3>提出前のコード差分</h3><p v-if="s.preview.diff.truncated">表示上限により一部を省略しています。</p><details v-for="file in s.preview.diff.files.slice(0,40)" :key="file.path" class="file-diff"><summary>{{ file.path }}</summary><p v-if="file.binary">バイナリのため本文を表示しません。</p><pre v-else>{{ (file.patch || '').slice(0,20000) }}</pre></details></template>
-          <button :disabled="!s.sessionConnected || !model.active() || s.busy || !!s.journal?.request_id" @click="model.collect">保存済みファイルを収集</button>
-          <p v-if="!s.sessionConnected" class="muted">編集セッションと保存状態を検証できないため、収集・実提出を開始できません。</p>
+          <button :disabled="!s.sessionConnected || !model.active() || s.busy || !!s.journal?.request_id" @click="model.collect">保存済み変更を固定して確認</button>
+          <p v-if="!s.sessionConnected" class="muted">編集セッションを認証できないため、収集・実提出を開始できません。保存状態を確認できない場合も、未保存バッファを取得することはありません。</p>
           <p v-if="s.journal?.pending" class="notice warning">確認が必要：操作結果が不明です。別のIDで再提出しません。</p>
           <button class="secondary" :disabled="s.busy || !s.journal" @click="model.checkResult">提出結果を確認</button>
           <dl v-if="s.result"><dt>収集状態</dt><dd>{{ collectionLabel }}</dd><dt>変更提出の状態</dt><dd>{{ conversionLabel }}</dd><dt>レビュー依頼</dt><dd><button v-if="s.result.change_request_id" class="link-button" @click="model.openReview(s.result.change_request_id)">依頼 #{{ s.result.change_request_id }} を確認</button><span v-else>作成を確認していません</span></dd></dl>
@@ -65,6 +65,7 @@ const conversionLabel = computed(() => ({ READY: 'レビュー依頼作成済み
             <p class="muted">削除を自動承認しません。登録済み証拠は変更確認で再照合されます。</p><p v-if="s.deletionIds.length" class="notice">削除意図を{{ s.deletionIds.length }}件登録済みです。取消APIは未提供です。誤選択の場合は提出せず管理者に確認してください。</p><button :disabled="!model.canPreview()" @click="model.preview">変更を確認</button>
           </fieldset>
           <section v-if="s.preview" class="preview" aria-label="提出前の確認内容">
+            <p class="notice">ここに表示した固定済みの内容だけを提出します。固定後に編集・保存した変更や、未保存の変更は含まれません。新しい内容を含める場合は今回の提出を行わず、管理者に次の収集を確認してください。</p>
             <h3>{{ s.preview.no_change ? '変更なし' : '変更確認済み' }}</h3><p>確認の有効期限：{{ date(s.preview.expires_at) }} <strong v-if="expired">期限切れ・再確認してください</strong></p>
             <p v-if="s.preview.main_differs" class="notice warning">チームの共有コードが作業開始後に更新されています。自動統合は行いません。</p>
             <ul><li v-for="f in s.preview.changes" :key="f.path"><span class="badge">{{ changeLabel(f.change) }}</span> {{ f.path }}</li></ul><h4>保持される除外対象</h4><ul><li v-for="p in s.preview.excluded_paths" :key="p">{{ p }}</li></ul>

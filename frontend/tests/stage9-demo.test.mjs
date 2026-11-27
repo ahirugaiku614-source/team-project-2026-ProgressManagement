@@ -21,13 +21,24 @@ test('明示した合成APIと製品画面モデルで2人の準備・提出・�
   assert.notEqual(state.basis.id,old);assert.equal(api.current().saved,api.shared());model.dispose()
 })
 
-test('合成デモでもdirtyの収集と保存済み未提出変更の更新を拒否する',async()=>{
+test('方式Cの合成デモは未保存を含めず固定し、保存済み未提出変更の更新を拒否する',async()=>{
   const api=syntheticApi()
   await api.request('/api/work/environment',{method:'POST',body:{request_id:'first'}})
   api.draft('changed')
-  await assert.rejects(api.request('/api/work/collections',{method:'POST'}),e=>e.code==='UNSAVED_CHANGES')
+  const capture=await api.request('/api/work/collections',{method:'POST',body:{request_id:'capture'}})
+  const original={submission_id:capture.submission_id,title:'synthetic'}
   api.save()
+  const view=await api.request('/api/work/preview',{method:'POST',body:original})
+  assert.equal(view.no_change,true) // 保存が後から変わっても、固定内容は最初のまま。
   await assert.rejects(api.request('/api/work/environment',{method:'POST',body:{request_id:'next',previous_basis_id:'old'}}),e=>e.code==='UNSUBMITTED_CHANGES')
+})
+
+test('新世代の合成デモでも旧未保存draftを履歴へ残す',async()=>{
+  const api=syntheticApi()
+  await api.request('/api/work/environment',{method:'POST',body:{request_id:'first'}})
+  api.draft('unsaved draft')
+  await api.request('/api/work/environment',{method:'POST',body:{request_id:'next',previous_basis_id:api.current().basis.id}})
+  assert.equal(api.previousGenerations()[0].draft,'unsaved draft')
 })
 
 test('合成デモは通常APIの失敗時fallbackではなく、未登録結果もUNKNOWNにする',async()=>{

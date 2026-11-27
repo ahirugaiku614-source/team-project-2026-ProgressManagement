@@ -37,29 +37,18 @@ class EditorAttestation:
 
 
 class EditingSessions:
+    capture_policy = 'EDITOR_SAVED_V1'
     def __init__(self, db, authority=None, clock=time.time):
         self.db = db
         self.authority = authority or DeniedAuthority()
         self.clock = clock
 
     def verify(self, target, session_id, generation):
-        row = self.db.get(models.WorkEditingSession, session_id, populate_existing=True)
+        row, basis = self.identity(target, session_id, generation)
         now = int(self.clock())
-        if row is None or row.revoked_at is not None or row.expires_at <= datetime.utcfromtimestamp(now):
-            raise ProviderUnavailable('Editing session unavailable')
-        basis = self.db.get(models.WorkBasis, row.basis_id, populate_existing=True)
-        actor = self.db.get(models.User, row.member_id)
-        if basis is None or actor is None or basis.state != 'ACTIVE' or basis.member_id != row.member_id:
-            raise ProviderUnavailable('Editing basis unavailable')
-        current = lock_target(self.db, actor, basis.team_id, basis.project_id, basis.task_id)
-        if basis.state != 'ACTIVE':raise ProviderUnavailable('Editing basis revoked')
-        revision = self.db.get(models.WorkWorkspaceRevision, basis.workspace_id, populate_existing=True)
-        if current != target or current.folder_path != basis.folder_path or basis.source_generation != generation or revision is None or revision.generation != generation:
-            raise ProviderUnavailable('Editing binding unavailable')
         challenge = str(uuid4())
         proof = self.authority.inspect(row.id, basis, challenge)
         now = int(self.clock())
-        # 毎回新しいchallengeを発行する。期限内でも古い証明のコピーを許可しない。
         if (not isinstance(proof, EditorAttestation)
                 or (proof.session_id, proof.basis_id, proof.workspace_id, proof.source_generation, proof.challenge)
                 != (row.id, basis.id, basis.workspace_id, generation, challenge)
@@ -72,10 +61,29 @@ class EditingSessions:
         return VerifiedSession(target, row.id, generation, min(proof.expires_at,
             int(row.expires_at.replace(tzinfo=timezone.utc).timestamp())), proof.saved)
 
+    def identity(self, target, session_id, generation):
+        """両方式で同じ本人・対象・世代・期限・失効を確認する。dirtyとは別の契約。"""
+        row = self.db.get(models.WorkEditingSession, session_id, populate_existing=True)
+        now = int(self.clock())
+        if (row is None or row.capture_policy != self.capture_policy
+                or row.revoked_at is not None or row.expires_at <= datetime.utcfromtimestamp(now)):
+            raise ProviderUnavailable('Editing session unavailable')
+        basis = self.db.get(models.WorkBasis, row.basis_id, populate_existing=True)
+        actor = self.db.get(models.User, row.member_id)
+        if basis is None or actor is None or basis.state != 'ACTIVE' or basis.member_id != row.member_id:
+            raise ProviderUnavailable('Editing basis unavailable')
+        current = lock_target(self.db, actor, basis.team_id, basis.project_id, basis.task_id)
+        if basis.state != 'ACTIVE':raise ProviderUnavailable('Editing basis revoked')
+        revision = self.db.get(models.WorkWorkspaceRevision, basis.workspace_id, populate_existing=True)
+        if current != target or current.folder_path != basis.folder_path or basis.source_generation != generation or revision is None or revision.generation != generation:
+            raise ProviderUnavailable('Editing binding unavailable')
+        return row, basis
+
     def open(self, actor, basis):
         target = lock_target(self.db, actor, basis.team_id, basis.project_id, basis.task_id)
         if basis.member_id != actor.id or basis.state != 'ACTIVE':raise TaskReviewError('WORK_BASIS_INACTIVE')
         row = models.WorkEditingSession(id=str(uuid4()), basis_id=basis.id, member_id=actor.id,
+            capture_policy=self.capture_policy,
             expires_at=datetime.utcfromtimestamp(self.clock()) + timedelta(minutes=10))
         self.db.add(row)
         self.db.flush()
@@ -88,6 +96,25 @@ class EditingSessions:
         return {'session_id': row.id, 'expires_at': row.expires_at}
 
 
+class SnapshotEditingSessions(EditingSessions):
+    """方式C：管理DBで発行した編集セッションの本人・権限・失効を検証する。
+
+    未保存バッファの不存在は検証せず、saved=Trueも作らない。発行APIは既存の
+    Firebase認証と作業基準の認可を通る。session IDだけでは他の対象へ転用できない。
+    """
+    capture_policy = 'SAVED_SNAPSHOT_V1'
+
+    def verify(self, target, session_id, generation):
+        from app.submission_authorization import SnapshotSession
+        row, basis = self.identity(target, session_id, generation)
+        return SnapshotSession(target, row.id, generation,
+            int(row.expires_at.replace(tzinfo=timezone.utc).timestamp()),basis.id,basis.workspace_id)
+
+    def open(self, actor, basis):
+        result = super().open(actor, basis)
+        return {**result, 'capture_policy': self.capture_policy}
+
+
 class WorkEnvironment:
     """既存サービスへ準備・新世代取得を接続する。実rootやURLはHTTPから受けない。"""
     def __init__(self, service, sessions=None, *, editor_gateway=False):
@@ -98,12 +125,13 @@ class WorkEnvironment:
     def status(self, actor, team, project, task):
         lock_target(self.service.db, actor, team, project, task)
         # statusは初期化・失効・セッション作成を実行しない。
-        connected = not isinstance(self.sessions.authority, DeniedAuthority)
+        connected = isinstance(self.sessions, SnapshotEditingSessions) or not isinstance(self.sessions.authority, DeniedAuthority)
         from app.task_review import DeniedWorkspaces
         ready = not isinstance(self.service.workspaces, DeniedWorkspaces)
         return {'state': 'CONFIGURED' if ready else 'UNAVAILABLE', 'launch_enabled': ready and connected and self.editor_gateway,
                 'prepare_enabled': ready,
                 'session_verification_available': connected, 'editor_url': None,
+                'capture_policy': self.sessions.capture_policy,
                 'reason': None if ready and connected else 'EDIT_SESSION_UNVERIFIED'}
 
     def prepare(self, actor, team, project, task, request_id, previous=None, session_id=None):
@@ -134,7 +162,8 @@ class WorkEnvironment:
                 raise TaskReviewError('EDIT_SESSION_UNVERIFIED')
             saved = self.sessions.verify(target, session_id, old.source_generation)
             # 保存済み未提出変更も、管理側の全体比較が一致しない限り更新を拒否する。
-            if saved.saved is not True:raise TaskReviewError('UNSAVED_CHANGES')
+            # 最新版取得は方式Cでも別問題。未保存変更を保護できない間は拒否する。
+            if isinstance(saved, VerifiedSession) and saved.saved is not True:raise TaskReviewError('UNSAVED_CHANGES')
             check = getattr(self.service.workspaces, 'unchanged', None)
             if check is None or check(old) is not True:raise TaskReviewError('UNSUBMITTED_CHANGES')
         operation = models.WorkEnvironmentOperation(id=str(uuid4()), request_id=request_id,
@@ -157,7 +186,10 @@ class WorkEnvironment:
                 db.commit()
             basis = self.service.start(actor, team, project, task,
                 initialization_request_id=request_id,before_initialize=bind_initialization)
-            if old is not None:self.service.end(actor, old.id, 'SUPERSEDED')
+            # 方式Cは旧ウィンドウの未保存状態を保証しない。新世代へ切り替えても
+            # 旧環境・旧基準・セッションを保持し、開いたままの作業を失効させない。
+            if old is not None and not isinstance(self.sessions,SnapshotEditingSessions):
+                self.service.end(actor, old.id, 'SUPERSEDED')
             operation = db.get(models.WorkEnvironmentOperation, operation_id, populate_existing=True)
             operation.result_basis_id = basis.id
             operation.state = 'CONFIRMED'

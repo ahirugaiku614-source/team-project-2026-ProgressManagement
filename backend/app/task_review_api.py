@@ -61,8 +61,9 @@ def get_workspaces():
     return DeniedWorkspaces()
 
 
-def get_review_sessions():
-    return DeniedSessionVerifier()
+def get_review_sessions(db: Session = Depends(get_db)):
+    from app.work_environment import SnapshotEditingSessions
+    return SnapshotEditingSessions(db)
 
 
 def get_task_review_service(db: Session = Depends(get_db), storage=Depends(get_project_storage),
@@ -72,8 +73,13 @@ def get_task_review_service(db: Session = Depends(get_db), storage=Depends(get_p
 
 
 def get_work_environment(service=Depends(get_task_review_service)):
-    from app.work_environment import WorkEnvironment
-    return WorkEnvironment(service)
+    from app.work_environment import WorkEnvironment, SnapshotEditingSessions
+    return WorkEnvironment(service, SnapshotEditingSessions(service.db))
+
+
+def get_gateway_environment(runtime=Depends(get_work_environment)):
+    """明示bootstrapではcookie gate用に認証依存を分離する。通常は既存runtime。"""
+    return runtime
 
 
 class ReviewInput(BaseModel):
@@ -87,6 +93,13 @@ class ReviewInput(BaseModel):
 
 class EmptyInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
+
+
+class SnapshotCollectionInput(EmptyInput):
+    """方式Cはdirtyの自己申告を受け取らない。用途はDBセッションから判定する。"""
+    editing_session_id: UUID
+    request_id: UUID
+    permit: str = Field(min_length=43, max_length=43, pattern=r'^[A-Za-z0-9_-]{43}$', repr=False)
 
 
 class EnvironmentInput(EmptyInput):
@@ -119,12 +132,16 @@ def require_saved_session(service, sessions, actor, basis, source):
     target = lock_target(service.db, actor, basis.team_id, basis.project_id, basis.task_id)
     try:
         evidence = sessions.verify(target, source.editing_session_id, basis.source_generation)
+        from app.submission_authorization import SnapshotSession
+        if type(evidence) is SnapshotSession and (evidence.basis_id,evidence.workspace_id)!=(basis.id,basis.workspace_id):
+            raise PublicError(403,'EDIT_SESSION_UNVERIFIED')
         if isinstance(evidence, VerifiedSession) and evidence.saved is False:
             raise PublicError(409, 'UNSAVED_CHANGES')
         # 同一対象・session・世代・有効期限も検査する。isDirtyのクライアント申告は使わない。
         class FixedEvidence:
             def verify(self, *args):return evidence
         check_session(FixedEvidence(), target, source.editing_session_id, basis.source_generation, int(time.time()))
+        return evidence
     except PublicError:
         raise
     except Exception:
@@ -253,7 +270,7 @@ def create_task_review_router(member_resolver):
         return {'url': path, 'expires_at': expires}
 
     @router.get('/api/editor-gateway/{workspace_id}')
-    def editor_gate(workspace_id: UUID, request: Request, runtime=Depends(get_work_environment)):
+    def editor_gate(workspace_id: UUID, request: Request, runtime=Depends(get_gateway_environment)):
         import re
         from app.submissions import token_digest
         if not runtime.editor_gateway:raise PublicError(503, 'EDITOR_GATEWAY_UNAVAILABLE')
@@ -325,16 +342,19 @@ def create_task_review_router(member_resolver):
         return {'deletion_id': result.id, 'path': result.path}
 
     @router.post(root + '/{basis_id}/collections', status_code=202)
-    def collect(team_id: int, project_id: int, task_id: int, basis_id: UUID, payload: SubmissionRequest,
+    def collect(team_id: int, project_id: int, task_id: int, basis_id: UUID, payload: SubmissionRequest | SnapshotCollectionInput,
                 user=Depends(member_resolver), service=Depends(get_task_review_service),
                 sessions=Depends(get_review_sessions), provider=Depends(get_submission_provider)):
         row = scope(service, user, team_id, project_id, task_id, basis_id)
-        if payload.has_unsaved_changes:raise PublicError(409, 'UNSAVED_CHANGES')
         with service.session_factory(row.project_id) as git:
             service._basis(git, user, row.id)
         # セッションは許可文字列とは独立して検証する。収集受付後、収集前に基準を固定する。
         from types import SimpleNamespace
-        require_saved_session(service, sessions, user, row, SimpleNamespace(editing_session_id=str(payload.editing_session_id)))
+        evidence = require_saved_session(service, sessions, user, row, SimpleNamespace(editing_session_id=str(payload.editing_session_id)))
+        from app.submission_authorization import SnapshotSession
+        if not isinstance(evidence, SnapshotSession):
+            if isinstance(payload, SnapshotCollectionInput):raise PublicError(409, 'CAPTURE_POLICY_MISMATCH')
+            if payload.has_unsaved_changes:raise PublicError(409, 'UNSAVED_CHANGES')
         existing = service.db.query(models.TaskSubmission).filter_by(student_id=user.id, task_id=task_id, request_id=str(payload.request_id)).first()
         if existing:
             binding = service.db.get(models.WorkCaptureBinding, existing.id)
