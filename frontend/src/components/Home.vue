@@ -178,7 +178,7 @@
 
           <div class="quick-grid">
 
-            <button class="quick-card">
+            <button class="quick-card" @click="router.push({ name: 'Editor' })">
               <span class="quick-icon">⌨</span>
               <strong>コード編集</strong>
               <small>エディタを開く</small>
@@ -190,10 +190,10 @@
               <small>作業状況を確認</small>
             </button>
 
-            <button class="quick-card">
+            <button class="quick-card" @click="router.push({ name: 'CodeSharing' })">
               <span class="quick-icon">▤</span>
-              <strong>プロジェクト</strong>
-              <small>一覧を確認</small>
+              <strong>コード共有とレビュー</strong>
+              <small>担当タスクとチームの変更を確認</small>
             </button>
 
             <button class="quick-card">

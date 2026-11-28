@@ -1,0 +1,99 @@
+# compose.yaml + stage10.yamlへ重ねる、新規の合成環境だけの構成。
+# 既存stage10-syn-demo-a/bや既存volumeを参照しない。
+x-collector: &collector
+  profiles: [stage10-isolated]
+  image: ${TEAM_BACKEND_IMAGE:?今回のコードを含む固定image ID}
+  runtime: runc
+  read_only: true
+  network_mode: none
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 32
+  mem_limit: 192m
+  cpus: 0.25
+  restart: "no"
+  tmpfs: [/tmp:rw,noexec,nosuid,nodev,size=16m]
+  command: [python, -B, -m, app.snapshot_runtime, --approved-synthetic, --settings, /run/collector-config/settings.json]
+services:
+  backend:
+    mem_limit: 384m
+    cpus: 0.5
+    group_add: ["${MEMBER_A_GID:?A専用GID}", "${MEMBER_B_GID:?B専用GID}"]
+    volumes:
+      - type: bind
+        source: ${COLLECTOR_A_SOCKET_DIR:?新規収集AのUDS親}
+        target: /run/collector-a
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${COLLECTOR_B_SOCKET_DIR:?新規収集BのUDS親}
+        target: /run/collector-b
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MANAGER_LEDGER_ROOT:?管理UID所有0700の新規台帳領域}
+        target: /run/client-ledgers
+        bind: {create_host_path: false}
+  db:
+    mem_limit: 512m
+    cpus: 0.5
+    read_only: true
+    # 任意の非root UIDでもimage既定の/var/run所有者に依存しない。
+    command: [postgres, -c, unix_socket_directories=/tmp]
+    tmpfs: [/tmp:rw,noexec,nosuid,nodev,size=64m]
+    shm_size: 128m
+  workspace-a:
+    mem_limit: 192m
+    cpus: 0.25
+  workspace-b:
+    mem_limit: 192m
+    cpus: 0.25
+  member-a:
+    # 共有されたimageを固定する。runcは合成専用でgVisorと同等とは扱わない。
+    image: codercom/code-server:4.145.2@sha256:aaad9c5f5ecb70713188e8466060f186b08bd328cd3e1bcffc4a2a2dca33c14b
+    runtime: runc
+    entrypoint: [/bin/sh, /run/managed/launch_code_server.sh]
+    environment: {HOME: /editor-data}
+    mem_limit: 1536m
+    cpus: 0.75
+    volumes:
+      - type: bind
+        source: ${STAGE10_TOOL_ROOT:?転送検証済みlabs/team-developmentの絶対パス}
+        target: /run/managed
+        read_only: true
+        bind: {create_host_path: false}
+  member-b:
+    image: codercom/code-server:4.145.2@sha256:aaad9c5f5ecb70713188e8466060f186b08bd328cd3e1bcffc4a2a2dca33c14b
+    runtime: runc
+    entrypoint: [/bin/sh, /run/managed/launch_code_server.sh]
+    environment: {HOME: /editor-data}
+    mem_limit: 1536m
+    cpus: 0.75
+    volumes:
+      - type: bind
+        source: ${STAGE10_TOOL_ROOT:?転送検証済みlabs/team-developmentの絶対パス}
+        target: /run/managed
+        read_only: true
+        bind: {create_host_path: false}
+  session-gateway:
+    mem_limit: 128m
+    cpus: 0.125
+  gateway:
+    mem_limit: 128m
+    cpus: 0.125
+  collector-a:
+    <<: *collector
+    user: "${MEMBER_A_UID:?非root A UID}:${MEMBER_A_GID:?A GID}"
+    volumes:
+      - {type: bind, source: "${MEMBER_A_WORKSPACE:?初期化で作成した新規w-UUID}", target: /source, read_only: true, bind: {create_host_path: false, propagation: rprivate}}
+      - {type: bind, source: "${COLLECTOR_A_SETTINGS:?A所有0700設定親}", target: /run/collector-config, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${COLLECTOR_A_KEYS:?A所有0700鍵親}", target: /run/collector-keys, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${COLLECTOR_A_SOCKET_DIR:?A所有0770 socket親}", target: /run/collector, bind: {create_host_path: false}}
+      - {type: bind, source: "${COLLECTOR_A_LEDGER_ROOT:?A所有0700台帳親}", target: /run/collector-ledger, bind: {create_host_path: false}}
+  collector-b:
+    <<: *collector
+    user: "${MEMBER_B_UID:?非root B UID}:${MEMBER_B_GID:?B GID}"
+    volumes:
+      - {type: bind, source: "${MEMBER_B_WORKSPACE:?初期化で作成した新規w-UUID}", target: /source, read_only: true, bind: {create_host_path: false, propagation: rprivate}}
+      - {type: bind, source: "${COLLECTOR_B_SETTINGS:?B所有0700設定親}", target: /run/collector-config, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${COLLECTOR_B_KEYS:?B所有0700鍵親}", target: /run/collector-keys, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${COLLECTOR_B_SOCKET_DIR:?B所有0770 socket親}", target: /run/collector, bind: {create_host_path: false}}
+      - {type: bind, source: "${COLLECTOR_B_LEDGER_ROOT:?B所有0700台帳親}", target: /run/collector-ledger, bind: {create_host_path: false}}

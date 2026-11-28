@@ -1,0 +1,44 @@
+{
+  "説明": "配置前に分割して管理者所有0600の設定へ置換する。値はplaceholderであり実接続先・秘密情報ではない。",
+  "workspace_worker": {
+    "root": "/managed",
+    "owner_uid": "REPLACE_MEMBER_UID",
+    "owner_gid": "REPLACE_MEMBER_GID",
+    "client_uid": "REPLACE_MANAGER_UID",
+    "client_gid": "REPLACE_MANAGER_GID",
+    "endpoint": "/run/workspace/initialize.sock",
+    "journal": "/managed/private/initialization.sqlite",
+    "request_key_file": "/run/keys/request.key",
+    "response_key_file": "/run/keys/response.key",
+    "authorization_key_file": "/run/keys/authorization.key",
+    "target": {
+      "team_id": "REPLACE_TEAM_DB_ID",
+      "project_id": "REPLACE_PROJECT_DB_ID",
+      "task_id": "REPLACE_TASK_DB_ID",
+      "student_id": "REPLACE_MEMBER_DB_ID",
+      "folder_path": "tasks/example-task"
+    }
+  },
+  "backend": {
+    "workers": [{
+      "target": {
+        "team_id": "REPLACE_TEAM_DB_ID",
+        "project_id": "REPLACE_PROJECT_DB_ID",
+        "task_id": "REPLACE_TASK_DB_ID",
+        "student_id": "REPLACE_MEMBER_DB_ID",
+        "folder_path": "tasks/example-task"
+      },
+      "endpoint": "/run/workspace-a/initialize.sock",
+      "owner_uid": "REPLACE_MEMBER_UID",
+      "request_key_file": "/run/workspace-keys/a-request.key",
+      "response_key_file": "/run/workspace-keys/a-response.key",
+      "authorization_key_file": "/run/workspace-keys/a-authorization.key"
+    }]
+  },
+  "socket_gateway": {
+    "origin": "https://REPLACE_WITH_APPROVED_ORIGIN.invalid",
+    "manager": "http://backend:8000",
+    "targets": {"REPLACE_WITH_WORKSPACE_UUID": "ws://member-a:8080"},
+    "upstream_cookie_names": []
+  }
+}

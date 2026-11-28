@@ -1,0 +1,11 @@
+{
+  "name": "team-change-submission",
+  "displayName": "チームの変更提出",
+  "version": "0.1.0",
+  "publisher": "team-development",
+  "engines": {"vscode": "^1.85.0"},
+  "main": "./extension.cjs",
+  "activationEvents": ["onCommand:teamChanges.submit"],
+  "contributes": {"commands": [{"command": "teamChanges.submit", "title": "変更を提出"}]},
+  "scripts": {"test": "node --test extension.test.cjs"}
+}

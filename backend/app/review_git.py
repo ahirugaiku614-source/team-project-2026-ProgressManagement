@@ -53,7 +53,9 @@ class ReviewGit:
     def session(self, project_id):
         """既存の初期化ロックを再利用し、初期化・提出をプロジェクト単位で直列化する。"""
         try:
-            with self.storage._project(project_id) as project, self.storage._lock(project):
+            # DB行ロックを持つ呼出し元もあるため、共有Gitの取得待ちはしない。
+            # 競合は既存StorageUnavailableとして拒否し、同じ操作IDで結果照会する。
+            with self.storage._project(project_id) as project, self.storage._lock(project, wait=False):
                 self.deadline = time.monotonic() + 60
                 if self.storage._state(project, "shared.git", self.storage._identity(project_id), True) != "ready":
                     raise StorageConflict("Initialize the project repository first")

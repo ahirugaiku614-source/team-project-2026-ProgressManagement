@@ -1,0 +1,179 @@
+# Stage 5の構成案。既存Compose、PR #21環境とは別ファイル・別パスを使う。
+# 全サービスをprofile配下に置き、通常のupでは起動しない。
+# UID/GID・image digest・絶対パスは承認後に管理者が指定する。既定値で補わない。
+name: saved-submission-isolated-lab
+
+x-restricted: &restricted
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  mem_limit: 1g
+  cpus: 1.0
+  restart: "no"
+
+services:
+  student-a:
+    <<: *restricted
+    profiles: [approval-required]
+    image: ${SUBMISSION_CODE_IMAGE:?digest固定のcode-server imageを指定}
+    user: "${STUDENT_A_UID:?学生Aの非root UID}:${STUDENT_A_GID:?学生AのGID}"
+    # 認証は管理者が用意する新規configで設定する。auth=noneは使用しない。
+    command: [--config, /etc/code-server/config.yaml, --bind-addr, "0.0.0.0:8080", --user-data-dir, /editor-data, --extensions-dir, /opt/submission-extensions, /workspace]
+    ports: ["127.0.0.1:${STUDENT_A_PORT:?新規検証用ポートA}:8080"]
+    networks: [student-a]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /editor-data:rw,nosuid,nodev,size=64m,mode=0700,uid=${STUDENT_A_UID},gid=${STUDENT_A_GID}
+    volumes:
+      - type: bind
+        source: ${STUDENT_A_PROJECT_ROOT:?新規の学生A専用Project領域}
+        target: /workspace
+        bind: {create_host_path: false, propagation: rprivate}
+      - type: bind
+        source: ${STUDENT_A_CONFIG:?新規code-server認証設定A}
+        target: /etc/code-server/config.yaml
+        read_only: true
+        bind: {create_host_path: false}
+
+  student-b:
+    <<: *restricted
+    profiles: [approval-required]
+    image: ${SUBMISSION_CODE_IMAGE:?digest固定のcode-server imageを指定}
+    user: "${STUDENT_B_UID:?学生Bの非root UID}:${STUDENT_B_GID:?学生BのGID}"
+    command: [--config, /etc/code-server/config.yaml, --bind-addr, "0.0.0.0:8080", --user-data-dir, /editor-data, --extensions-dir, /opt/submission-extensions, /workspace]
+    ports: ["127.0.0.1:${STUDENT_B_PORT:?新規検証用ポートB}:8080"]
+    networks: [student-b]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /editor-data:rw,nosuid,nodev,size=64m,mode=0700,uid=${STUDENT_B_UID},gid=${STUDENT_B_GID}
+    volumes:
+      - type: bind
+        source: ${STUDENT_B_PROJECT_ROOT:?新規の学生B専用Project領域}
+        target: /workspace
+        bind: {create_host_path: false, propagation: rprivate}
+      - type: bind
+        source: ${STUDENT_B_CONFIG:?新規code-server認証設定B}
+        target: /etc/code-server/config.yaml
+        read_only: true
+        bind: {create_host_path: false}
+
+  collector-a:
+    <<: *restricted
+    profiles: [approval-required]
+    image: ${SUBMISSION_MANAGER_IMAGE:?Stage5コードを含むdigest固定image}
+    user: "${COLLECTOR_A_UID:?収集Aの非root UID}:${COLLECTOR_A_GID:?収集AのGID}"
+    # 認可検証器等のbootstrap注入がない現入口は拒否する。設定だけでは有効化しない。
+    command: [python, -B, -m, app.submission_server]
+    network_mode: none
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=16m"]
+    volumes:
+      - type: bind
+        source: ${STUDENT_A_PROJECT_ROOT}
+        target: /source
+        read_only: true
+        bind: {create_host_path: false, propagation: rprivate}
+      - type: bind
+        source: ${COLLECTOR_A_SOCKET_DIR:?新規socket専用領域A}
+        target: /rpc
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${COLLECTOR_A_LEDGER_DIR:?学生から非公開の新規台帳A}
+        target: /ledger
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${COLLECTOR_A_KEYS_DIR:?専用サービス鍵A}
+        target: /keys
+        read_only: true
+        bind: {create_host_path: false}
+
+  collector-b:
+    <<: *restricted
+    profiles: [approval-required]
+    image: ${SUBMISSION_MANAGER_IMAGE}
+    user: "${COLLECTOR_B_UID:?収集Bの非root UID}:${COLLECTOR_B_GID:?収集BのGID}"
+    command: [python, -B, -m, app.submission_server]
+    network_mode: none
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=16m"]
+    volumes:
+      - type: bind
+        source: ${STUDENT_B_PROJECT_ROOT}
+        target: /source
+        read_only: true
+        bind: {create_host_path: false, propagation: rprivate}
+      - type: bind
+        source: ${COLLECTOR_B_SOCKET_DIR:?新規socket専用領域B}
+        target: /rpc
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${COLLECTOR_B_LEDGER_DIR:?学生から非公開の新規台帳B}
+        target: /ledger
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${COLLECTOR_B_KEYS_DIR:?専用サービス鍵B}
+        target: /keys
+        read_only: true
+        bind: {create_host_path: false}
+
+  manager:
+    <<: *restricted
+    profiles: [manager-approval-required]
+    image: ${SUBMISSION_MANAGER_IMAGE}
+    user: "${MANAGER_UID:?管理サービスの非root UID}:${MANAGER_GID:?管理サービスのGID}"
+    # default providerは拒否のまま。DB設定を入れても収集を自動有効化しない。
+    command: [uvicorn, app.main:app, --host, "0.0.0.0", --port, "8000"]
+    networks: [management]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PROJECT_STORAGE_ROOT: /var/lib/team-projects
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${SUBMISSION_DB_USER:?新規専用DBユーザー}
+      POSTGRES_DB: ${SUBMISSION_DB_NAME:?新規専用DB名}
+      POSTGRES_PASSWORD: ${SUBMISSION_DB_PASSWORD:?承認後に秘密注入するDBパスワード}
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=64m"]
+    volumes:
+      - type: bind
+        source: ${MANAGED_GIT_ROOT:?学生に公開しない新規Git保存領域}
+        target: /var/lib/team-projects
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${COLLECTOR_A_SOCKET_DIR}
+        target: /rpc/a
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${COLLECTOR_B_SOCKET_DIR}
+        target: /rpc/b
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MANAGER_FIREBASE_CREDENTIAL_FILE:?新規検証用認証設定}
+        target: /app/firebase-credentials.json
+        read_only: true
+        bind: {create_host_path: false}
+
+  postgres:
+    <<: *restricted
+    profiles: [manager-approval-required]
+    image: ${SUBMISSION_POSTGRES_IMAGE:?digest固定のPostgreSQL image}
+    user: "${POSTGRES_UID:?専用DBの非root UID}:${POSTGRES_GID:?専用DBのGID}"
+    networks: [management]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+      - /var/run/postgresql:rw,nosuid,nodev,size=16m,mode=0700,uid=${POSTGRES_UID},gid=${POSTGRES_GID}
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_USER: ${SUBMISSION_DB_USER}
+      POSTGRES_DB: ${SUBMISSION_DB_NAME}
+      POSTGRES_PASSWORD: ${SUBMISSION_DB_PASSWORD}
+    volumes:
+      - type: bind
+        source: ${SUBMISSION_DB_ROOT:?新規の専用DB保存領域}
+        target: /var/lib/postgresql/data
+        bind: {create_host_path: false}
+    # image内部UIDと新規保存先の初期化方法は承認後に確定する。DBポートは公開しない。
+
+networks:
+  student-a: {internal: true}
+  student-b: {internal: true}
+  management: {internal: true}

@@ -1,6 +1,19 @@
+# 合成用buildにも資格情報・実行時データ・ローカル環境を送らない。
+.git
+.venv
 .env
 .env.*
 firebase-credentials.json
 __pycache__/
 *.py[cod]
 .venv/
+**/__pycache__
+**/*.pyc
+**/*.sqlite
+**/*.sqlite-*
+**/*.db
+**/*.key
+**/*.pem
+**/operator-credentials.json
+**/accounts.json
+**/node_modules

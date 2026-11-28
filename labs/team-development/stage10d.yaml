@@ -1,0 +1,22 @@
+# Compose 2.24.4以上の!overrideが必要。合成専用でFirebase mountを完全に除去する。
+# compose.yaml + stage10.yaml + stage10c.yaml + このファイルの順。起動前にconfigを検査。
+services:
+  backend:
+    command: [uvicorn, app.synthetic_asgi:app, --host, "0.0.0.0", --port, "8000", --no-access-log]
+    environment:
+      STAGE10_SYNTHETIC_APPROVED: "1"
+      STAGE10_SYNTHETIC_SETTINGS_FILE: /run/workspace-config/backend.json
+    volumes: !override
+      - {type: bind, source: "${TEAM_GIT_ROOT:?合成専用Git}", target: /var/lib/team-projects, bind: {create_host_path: false}}
+      - {type: bind, source: "${WORKSPACE_BACKEND_SETTINGS:?合成設定専用親}", target: /run/workspace-config, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${WORKSPACE_BACKEND_KEYS:?管理者専用鍵}", target: /run/workspace-keys, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${SYNTHETIC_AUTH_ROOT:?新規管理UID所有0700の合成認証vault}", target: /run/synthetic-auth, bind: {create_host_path: false}}
+      - {type: bind, source: "${WORKSPACE_A_SOCKET_DIR:?A初期化UDS}", target: /run/workspace-a, bind: {create_host_path: false}}
+      - {type: bind, source: "${WORKSPACE_B_SOCKET_DIR:?B初期化UDS}", target: /run/workspace-b, bind: {create_host_path: false}}
+      - {type: bind, source: "${COLLECTOR_A_SOCKET_DIR:?A収集UDS}", target: /run/collector-a, bind: {create_host_path: false}}
+      - {type: bind, source: "${COLLECTOR_B_SOCKET_DIR:?B収集UDS}", target: /run/collector-b, bind: {create_host_path: false}}
+      - {type: bind, source: "${MANAGER_LEDGER_ROOT:?管理台帳}", target: /run/client-ledgers, bind: {create_host_path: false}}
+  db:
+    image: postgres:16.16-alpine@sha256:9d9e487c1bd6413c52ccb3c02f46c8e37fa1e1d1a32a84519eb4e68d0ad1da30
+  gateway:
+    image: ${STAGE10_GATEWAY_IMAGE:?承認済みnginxの固定sha256参照}

@@ -1,2 +1,4 @@
 -r requirements.txt
 httpx==0.28.1
+# Dockerを起動せず、新規Compose構成案をYAMLとして検査する開発用依存。
+PyYAML==6.0.3

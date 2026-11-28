@@ -1,0 +1,147 @@
+# Stage 10で承認・配置検証してから使用する。既存Compose・PR #21環境は使わない。
+# 各WORKSPACEはLinuxWorkspacesが作った新規w-UUIDだけ。管理rootやm-UUIDを渡さない。
+name: team-development-mvp
+x-editor: &editor
+  profiles: [stage10-approved]
+  image: ${TEAM_CODE_IMAGE:?digest固定の管理済みimageが必要}
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  mem_limit: 1g
+  cpus: 1.0
+  restart: "no"
+  command: [--config, /run/editor-config/config.yaml, --bind-addr, "0.0.0.0:8080", --user-data-dir, /editor-data, --extensions-dir, /opt/team-extensions, /workspace]
+  tmpfs: [/tmp:rw,noexec,nosuid,nodev,size=64m]
+services:
+  backend:
+    profiles: [stage10-approved]
+    image: ${TEAM_BACKEND_IMAGE:?Stage9コードを含むdigest固定image}
+    user: "${MANAGER_UID:?非root管理UID}:${MANAGER_GID:?管理GID}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 1.0
+    command: [uvicorn, app.main:app, --host, "0.0.0.0", --port, "8000", --no-access-log]
+    networks: [manager]
+    environment:
+      DATABASE_URL: ${TEAM_DATABASE_URL:?管理側だけのDB接続設定}
+      PROJECT_STORAGE_ROOT: /var/lib/team-projects
+    tmpfs: [/tmp:rw,noexec,nosuid,nodev,size=128m]
+    volumes:
+      - type: bind
+        source: ${TEAM_GIT_ROOT:?新規の管理側Git保存領域}
+        target: /var/lib/team-projects
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TEAM_FIREBASE_CREDENTIAL_FILE:?管理側だけの認証設定ファイル}
+        target: /app/firebase-credentials.json
+        read_only: true
+        bind: {create_host_path: false}
+    # 既定provider/authorityは拒否のまま。環境変数で模擬providerへ切り替えない。
+  db:
+    profiles: [stage10-approved]
+    image: ${TEAM_POSTGRES_IMAGE:?digest固定PostgreSQL image}
+    user: "${POSTGRES_UID:?非rootDB UID}:${POSTGRES_GID:?DB GID}"
+    networks: [manager]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 1.0
+    environment:
+      POSTGRES_USER: ${TEAM_DATABASE_USER:?新規DBユーザー名}
+      POSTGRES_DB: ${TEAM_DATABASE_NAME:?新規DB名}
+      POSTGRES_PASSWORD_FILE: /run/secrets/database-password
+    secrets: [database-password]
+    volumes:
+      - type: bind
+        source: ${TEAM_DATABASE_ROOT:?既存と異なる新規DB保存領域}
+        target: /var/lib/postgresql/data
+        bind: {create_host_path: false}
+  member-a:
+    <<: *editor
+    user: "${MEMBER_A_UID:?非root UID}:${MEMBER_A_GID:?専用GID}"
+    networks: [member-a]
+    environment:
+      TEAM_APP_ORIGIN: ${TEAM_APP_ORIGIN:?TLSの管理画面origin}
+      TEAM_ID: ${TEAM_ID:?Team ID}
+      PROJECT_ID: ${PROJECT_ID:?Project ID}
+      TASK_ID: ${MEMBER_A_TASK_ID:?担当Task ID}
+    volumes:
+      - type: bind
+        source: ${MEMBER_A_WORKSPACE:?新規の専用w-UUID領域}
+        target: /workspace
+        bind: {create_host_path: false, propagation: rprivate}
+      - type: bind
+        source: ${MEMBER_A_EDITOR_DATA:?新規の専用エディターデータ}
+        target: /editor-data
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MEMBER_A_CONFIG:?認証済み管理設定}
+        target: /run/editor-config
+        read_only: true
+        bind: {create_host_path: false}
+  member-b:
+    <<: *editor
+    user: "${MEMBER_B_UID:?Aと異なる非root UID}:${MEMBER_B_GID:?Aと異なる専用GID}"
+    networks: [member-b]
+    environment:
+      TEAM_APP_ORIGIN: ${TEAM_APP_ORIGIN:?TLSの管理画面origin}
+      TEAM_ID: ${TEAM_ID:?Team ID}
+      PROJECT_ID: ${PROJECT_ID:?Project ID}
+      TASK_ID: ${MEMBER_B_TASK_ID:?担当Task ID}
+    volumes:
+      - type: bind
+        source: ${MEMBER_B_WORKSPACE:?Aと異なる新規w-UUID領域}
+        target: /workspace
+        bind: {create_host_path: false, propagation: rprivate}
+      - type: bind
+        source: ${MEMBER_B_EDITOR_DATA:?Aと異なる新規エディターデータ}
+        target: /editor-data
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MEMBER_B_CONFIG:?認証済み管理設定}
+        target: /run/editor-config
+        read_only: true
+        bind: {create_host_path: false}
+  gateway:
+    profiles: [stage10-approved]
+    image: ${TEAM_GATEWAY_IMAGE:?digest固定の非root nginx image}
+    user: "${GATEWAY_UID:?非root UID}:${GATEWAY_GID:?専用GID}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+    ports: ["127.0.0.1:${TEAM_TLS_PORT:?新規検証ポート}:8443"]
+    networks: [member-a, member-b, manager]
+    tmpfs: [/tmp:rw,noexec,nosuid,nodev,size=16m]
+    volumes:
+      - type: bind
+        source: ${TEAM_FRONTEND_DIST:?Stage9でビルドした公開用画面}
+        target: /srv/web
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TEAM_GATEWAY_CONFIG:?workspaceごとの固定ルートとauth_request設定}
+        target: /etc/nginx/nginx.conf
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TEAM_GATEWAY_TLS:?新規検証用TLS証明書と鍵}
+        target: /run/tls
+        read_only: true
+        bind: {create_host_path: false}
+# 管理側FastAPI・DB・Git・収集サービスは学生networkへ直接置かない。
+# 既存の収集Compose案のUDS・台帳分離を再利用し、学生にはDB/Git/socketを渡さない。
+networks:
+  member-a: {internal: true}
+  member-b: {internal: true}
+  manager: {internal: true}
+secrets:
+  database-password:
+    file: ${TEAM_DATABASE_PASSWORD_FILE:?管理側だけの秘密ファイル}
