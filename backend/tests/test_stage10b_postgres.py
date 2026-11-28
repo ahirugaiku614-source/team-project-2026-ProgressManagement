@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import re
 import threading
+import sys
+import tempfile
 import unittest
 from uuid import uuid4
 
@@ -59,6 +61,40 @@ class MigrationAndConcurrencyTests(unittest.TestCase):
         self.assertRegex(self.schema, r'^stage10b_[0-9a-f]{32}$')
         with self.engine.begin() as db:
             db.execute(self.text('DROP SCHEMA ' + self.schema + ' CASCADE'))
+
+    @unittest.skipUnless(sys.platform=='linux','Requires Linux Git locks and isolated PostgreSQL')
+    def test_real_db_git_opposite_order_exits_without_deadlock(self):
+        """実DB行ロックと実Gitロックを逆順に保持し、Git側が待たずに拒否することを検証。"""
+        from app.project_storage import ProjectStorage,StorageUnavailable
+        from app.review_git import ReviewGit
+        with tempfile.TemporaryDirectory() as directory:
+            storage=ProjectStorage(str(Path(directory)/'storage'));storage.initialize(1,1)
+            git_locked=threading.Event();probe=threading.Event();completed=threading.Event();failures=[]
+            def git_then_db():
+                try:
+                    with ReviewGit(storage).session(1):
+                        git_locked.set()
+                        if not probe.wait(3):raise AssertionError('Test synchronization timeout')
+                        with self.engine.begin() as db:
+                            db.execute(self.text('SET LOCAL search_path TO '+self.schema))
+                            db.execute(self.text("SET LOCAL lock_timeout TO '2s'"))
+                            db.execute(self.text('SELECT id FROM users WHERE id=1 FOR UPDATE'))
+                    completed.set()
+                except Exception as error:failures.append(type(error).__name__)
+            thread=threading.Thread(target=git_then_db,daemon=True);thread.start()
+            self.assertTrue(git_locked.wait(3))
+            try:
+                with self.engine.begin() as db:
+                    db.execute(self.text('SET LOCAL search_path TO '+self.schema))
+                    db.execute(self.text("SET LOCAL lock_timeout TO '2s'"))
+                    db.execute(self.text('SELECT id FROM users WHERE id=1 FOR UPDATE'))
+                    probe.set()
+                    # DBを保持したままGitを待たない。拒否後にDBを解放して相手を進める。
+                    with self.assertRaises(StorageUnavailable):
+                        with ReviewGit(storage).session(1):pass
+            finally:
+                probe.set();thread.join(5)
+            self.assertFalse(thread.is_alive());self.assertEqual(failures,[]);self.assertTrue(completed.is_set())
 
     def test_chain_preserves_user_and_adds_initialization_binding(self):
         from sqlalchemy import inspect

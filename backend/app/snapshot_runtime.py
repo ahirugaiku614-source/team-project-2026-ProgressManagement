@@ -6,7 +6,7 @@ from dataclasses import asdict
 from app.submission_rpc import target_from, reject
 
 
-def configured_snapshot_provider(db, actor, storage, basis_id, config, *, enabled=False):
+def configured_snapshot_provider(db, actor, storage, basis_id, config, *, enabled=False,sessions=None):
     """固定設定のworkspaceとDB基準が一致するときだけ実UDSへ接続する。
 
     HTTPのbasis IDは認可・設定照合の索引にすぎない。パス・接続先・鍵・世代を
@@ -34,7 +34,7 @@ def configured_snapshot_provider(db, actor, storage, basis_id, config, *, enable
     keys, auth = keys_from(config)
     return authorized_rpc_provider(db, actor, rpc_keys=keys, authorization_key=auth,
         collector_id=config['collector_id'],target=target,generation=basis.source_generation,
-        store=GitSnapshotStore(SubmissionReviewGit(storage).session),sessions=SnapshotEditingSessions(db),
+        store=GitSnapshotStore(SubmissionReviewGit(storage).session),sessions=sessions if sessions is not None else SnapshotEditingSessions(db),
         transport=UnixSocketTransport(config['endpoint'],config['owner_uid'],enabled=True),
         ledger=SQLiteReplayLedger(config['client_ledger']))
 

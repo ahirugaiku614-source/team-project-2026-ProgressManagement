@@ -4,6 +4,8 @@ export class ApiError extends Error {
 }
 
 export const explanations = {
+  SYNTHETIC_AUTH_REQUIRED: '合成環境のログイン期限または失効状態を確認してください。ログインし直す必要があります。',
+  SYNTHETIC_AUTH_UNAVAILABLE: '合成認証の台帳またはDBを確認できません。変更操作を止め、管理者へ確認してください。',
   ENVIRONMENT_REQUEST_REQUIRED: '「作業環境を準備」から操作してください。準備操作IDを記録してから開始します。',
   ENVIRONMENT_OUTCOME_UNKNOWN: '前の作業環境準備が未確定です。別IDで再実行せず、準備結果を確認してください。',
   EDITOR_GATEWAY_UNAVAILABLE: '安全なcode-server接続経路は未接続です。管理者の配置・実機検証が必要です。',

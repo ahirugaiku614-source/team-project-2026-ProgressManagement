@@ -5,9 +5,11 @@ from pathlib import Path
 import tempfile
 import unittest
 import zipfile
+import subprocess
 
 from build_handoff import allowed,build,ROOT
 from unpack_handoff import unpack
+from verify_handoff_commit import verify
 from unittest.mock import patch
 
 
@@ -31,6 +33,17 @@ class HandoffTests(unittest.TestCase):
             self.assertTrue(allowed(path))
         for path in ('backend/.env','backend/firebase-credentials.json','frontend/dist/index.html','frontend/node_modules/a.js','frontend/artifacts/demo.html','tmp/a.py','backend/app/test.sqlite'):
             self.assertFalse(allowed(path))
+
+    def test_claimed_commit_id_does_not_make_modified_source_trusted(self):
+        name='backend/app/main.py';body=b'untrusted synthetic replacement\n'
+        head=subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True,check=True).stdout.strip()
+        blob=subprocess.run(['git','hash-object','--stdin'],input=body,capture_output=True,check=True).stdout.decode().strip()
+        archive=self.root/'claimed.zip'
+        with zipfile.ZipFile(archive,'w') as stream:
+            stream.writestr(name,body)
+            stream.writestr('stage10-manifest.json',json.dumps({'version':1,'files':{name:hashlib.sha256(body).hexdigest()},
+                'source':{'base_commit':head,'state':'COMMITTED','git_blobs':{name:blob}}}))
+        with self.assertRaises(ValueError):verify(archive,ROOT,head)
 
     def test_verified_archive_extracts_only_to_new_directory(self):
         dest=self.root/'new'

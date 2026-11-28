@@ -44,7 +44,11 @@ class SocketGateway:
             if endpoint.scheme!='ws' or endpoint.username or endpoint.password or endpoint.path not in ('','/') or endpoint.query or endpoint.fragment:raise ValueError('Invalid editor endpoint')
         if len(set(targets.values()))!=len(targets):raise ValueError('Editor endpoints must be separate')
         for name in upstream_cookie_names:
-            if not isinstance(name,str) or not name.isidentifier() or name.startswith('work_editor_'):raise ValueError('Invalid upstream cookie policy')
+            # Cookie名はPython変数名ではない。code-serverのハイフンを含む名前を
+            # 許可する一方、区切り・改行・管理capabilityの転送は引き続き拒否する。
+            import re
+            if (not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',name)
+                    or name.startswith('work_editor_')):raise ValueError('Invalid upstream cookie policy')
         self.targets=dict(targets);self.origin=origin.rstrip('/');self.check=check
         self.upstream_cookie_names=tuple(upstream_cookie_names)
         self.enabled,self.connector,self.interval=enabled,connector,interval

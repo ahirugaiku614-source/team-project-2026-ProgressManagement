@@ -18,6 +18,8 @@ PREFIXES=('backend/app/','backend/migrations/','backend/tests/','frontend/src/',
 EXACT={'backend/Dockerfile','backend/requirements.txt','frontend/package.json','frontend/package-lock.json',
        'frontend/index.html','frontend/stage9-demo.html','frontend/vite.config.js','frontend/vite.demo.config.mjs',
        'docs/stage10c-handoff.md'}
+EXACT.update({'backend/Dockerfile.stage10d','frontend/stage10d-native.html','frontend/vite.native.config.mjs',
+              'docs/stage10d-handoff.md','backend/.dockerignore'})
 SUFFIXES={'.py','.sql','.js','.mjs','.cjs','.vue','.json','.yaml','.yml','.template','.md','.html','.txt','.sh','.css','.svg','.png'}
 
 
@@ -39,7 +41,7 @@ def build(output):
         'backend','frontend','labs/team-development','labs/code-server-submit','docs'],cwd=ROOT,
         capture_output=True,text=True,check=True)
     paths=sorted({p for p in result.stdout.splitlines() if allowed(p)})
-    files={};manifest={}
+    files={};manifest={};blobs={}
     for name in paths:
         path=ROOT/name
         if path.is_symlink() or any(p.is_symlink() for p in path.parents):raise ValueError('Unsafe source')
@@ -48,10 +50,18 @@ def build(output):
         if re.search(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{25,}',data):
             raise ValueError('Secret candidate in '+name)
         files[name]=data;manifest[name]=hashlib.sha256(data).hexdigest()
+        # Git属性による改行正規化も含めたblob IDを記録する。-wを使わずobjectを変更しない。
+        blobs[name]=subprocess.run(['git','-c','core.autocrlf=true','hash-object','--path='+name,'--stdin'],cwd=ROOT,input=data,
+            capture_output=True,check=True).stdout.decode().strip()
+    head=subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True,check=True).stdout.strip()
+    matches=all(subprocess.run(['git','rev-parse',head+':'+name],cwd=ROOT,capture_output=True,text=True).stdout.strip()==oid
+                for name,oid in blobs.items())
     output.parent.mkdir(parents=True,exist_ok=True)
     with output.open('xb') as stream,zipfile.ZipFile(stream,'w',compression=zipfile.ZIP_DEFLATED) as archive:
         for name,data in files.items():archive.writestr(name,data)
-        archive.writestr('stage10-manifest.json',json.dumps({'version':1,'files':manifest},sort_keys=True))
+        archive.writestr('stage10-manifest.json',json.dumps({'version':1,'files':manifest,
+            'source':{'base_commit':head,'state':'COMMITTED' if matches else 'UNCOMMITTED',
+                      'git_blobs':blobs}},sort_keys=True))
     return len(files)
 
 

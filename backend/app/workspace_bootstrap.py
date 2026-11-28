@@ -48,13 +48,14 @@ def configured_workspace_server(settings,*,enabled=False):
                      enabled=True,timeout=10,max_request=MAX_FRAME)
 
 
-def build_backend_environment(db,actor,storage,settings,*,enabled=False):
+def build_backend_environment(db,actor,storage,settings,*,enabled=False,sessions=None):
     if enabled is not True or sys.platform!='linux':reject()
     from app.workspace_rpc import RemoteWorkspaces,WorkspaceAuthorizationIssuer,MAX_FRAME
     from app.submission_uds import UnixSocketTransport
     from app.workspace_files import MappedWorkspaces
     from app.task_review import TaskReviewService
     from app.work_environment import WorkEnvironment,SnapshotEditingSessions
+    session_service=sessions if sessions is not None else SnapshotEditingSessions(db)
     adapters={}
     for config in settings:
         target=target_from(config['target'])
@@ -65,28 +66,28 @@ def build_backend_environment(db,actor,storage,settings,*,enabled=False):
         # workspace証拠と方式CのDBセッションを照合する。dirty値は作らない。
         def verify_capture(basis,row,fixed=target):
             from app.submission_authorization import SnapshotSession
-            evidence=SnapshotEditingSessions(db).verify(fixed,row.editing_session_id,basis.source_generation)
+            evidence=session_service.verify(fixed,row.editing_session_id,basis.source_generation)
             return (type(evidence) is SnapshotSession and row.student_id==actor.id
                     and (evidence.basis_id,evidence.workspace_id)==(basis.id,basis.workspace_id))
         client.collection_verifier=verify_capture
         if (actor.id,target.project_id) in adapters:reject()
         adapters[(actor.id,target.project_id)]=client
     service=TaskReviewService(db,storage,workspaces=MappedWorkspaces(adapters))
-    sessions=SnapshotEditingSessions(db)
     # 方式CのDBセッションを使用する。収集providerとgatewayの実接続は別途承認。
-    return WorkEnvironment(service,sessions,editor_gateway=False)
+    return WorkEnvironment(service,session_service,editor_gateway=False)
 
 
-def install_backend(app,member_resolver,settings,*,enabled=False,collectors=(),gateway_enabled=False):
+def install_backend(app,member_resolver,settings,*,enabled=False,collectors=(),gateway_enabled=False,sessions_factory=None):
     """起動管理者が固定設定で呼ぶ。認証・DB依存は既存関数をそのまま使う。"""
     if enabled is not True:reject()
-    from fastapi import Depends
+    from fastapi import Depends,Request
     from app.db.database import get_db
     from app.project_storage import get_project_storage
     from app.task_review_api import get_work_environment,get_task_review_service,get_review_sessions,get_gateway_environment
     if type(gateway_enabled) is not bool:reject()
-    def runtime(actor=Depends(member_resolver),db=Depends(get_db),storage=Depends(get_project_storage)):
-        result=build_backend_environment(db,actor,storage,settings,enabled=True)
+    def runtime(request:Request,actor=Depends(member_resolver),db=Depends(get_db),storage=Depends(get_project_storage)):
+        selected=sessions_factory(db,request) if sessions_factory else None
+        result=build_backend_environment(db,actor,storage,settings,enabled=True,sessions=selected)
         result.editor_gateway=gateway_enabled
         return result
     def service(current=Depends(runtime)):return current.service
@@ -96,14 +97,14 @@ def install_backend(app,member_resolver,settings,*,enabled=False,collectors=(),g
     app.dependency_overrides[get_review_sessions]=sessions
     # cookie gateにはTeam付きFirebase依存を要求しない。既存capability検証が
     # actor・workspace・sessionをDBから特定する。通常APIの認証は変更しない。
-    def gateway(db=Depends(get_db)):
+    def gateway(request:Request,db=Depends(get_db)):
         from app.task_review import TaskReviewService
         from app.work_environment import WorkEnvironment,SnapshotEditingSessions
         # gateはDBのcapabilityと現権限だけを読み、Git・初期化先には接続しない。
-        return WorkEnvironment(TaskReviewService(db),SnapshotEditingSessions(db),editor_gateway=gateway_enabled)
+        selected=sessions_factory(db,request) if sessions_factory else SnapshotEditingSessions(db)
+        return WorkEnvironment(TaskReviewService(db),selected,editor_gateway=gateway_enabled)
     app.dependency_overrides[get_gateway_environment]=gateway
     if collectors:
-        from fastapi import Request
         from app.snapshot_runtime import configured_snapshot_provider
         from app.submission_provider import get_submission_provider
         def provider(request:Request,actor=Depends(member_resolver),db=Depends(get_db),storage=Depends(get_project_storage)):
@@ -112,7 +113,8 @@ def install_backend(app,member_resolver,settings,*,enabled=False,collectors=(),g
             if basis is None or basis.member_id!=actor.id:reject()
             matches=[c for c in collectors if c['workspace_id']==basis.workspace_id]
             if len(matches)!=1:reject()
-            return configured_snapshot_provider(db,actor,storage,basis.id,matches[0],enabled=True)
+            selected=sessions_factory(db,request) if sessions_factory else None
+            return configured_snapshot_provider(db,actor,storage,basis.id,matches[0],enabled=True,sessions=selected)
         app.dependency_overrides[get_submission_provider]=provider
 
 
